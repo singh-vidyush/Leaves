@@ -13,7 +13,7 @@ def gather_permitted_task_context(max_docs: int = 10) -> list[dict[str, Any]]:
     Collects ONLY task-relevant excerpts across authorized local sources:
     - User-selected Markdown documents
     - Emails identified as relevant to a task (not the entire inbox)
-    - Existing calendar entries
+    Calendar event text is deliberately excluded; event times stay local for scheduling.
     """
     context: list[dict[str, Any]] = []
 

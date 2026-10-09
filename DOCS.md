@@ -1,6 +1,6 @@
 # Documentation Map
 
-This map links the project docs. The product and architecture reflect the current owner decisions; detailed integration, scheduling, release, and deployment policies remain in progress.
+This map links current product decisions, implementation boundaries, release criteria, and setup instructions.
 
 ## 1. Core Project Docs
 - [README.md](README.md): Product entry point and development quick start.
@@ -14,6 +14,8 @@ This map links the project docs. The product and architecture reflect the curren
 - [SPEC/AI_PIPELINE.md](SPEC/AI_PIPELINE.md): Agent reasoning, provider boundary, urgency ranking, and schedule validation.
 - [SPEC/INTEGRATIONS.md](SPEC/INTEGRATIONS.md): Specifications for the pluggable data ingestion system.
 - [SPEC/API_CONTRACT.md](SPEC/API_CONTRACT.md): API definitions between the Tauri shell and FastAPI backend.
+- [SPEC/INTEGRATIONS.md](SPEC/INTEGRATIONS.md): Connector contract, Google scopes, data flow, and credential policy.
+- [SPEC/RELEASE_ACCEPTANCE.md](SPEC/RELEASE_ACCEPTANCE.md): Testable MVP acceptance criteria and release phases.
 
 ## 3. Development Guides
 - [GUIDES/SETUP.md](GUIDES/SETUP.md): Step-by-step setup guide for Rust, Python, Node.js, and pnpm.

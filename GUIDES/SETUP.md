@@ -21,6 +21,17 @@ cd ../desktop
 pnpm install
 ```
 
+For a packaged Tauri build, install the backend bundling extra in `apps/server`:
+
+```sh
+cd apps/server
+python -m pip install -e ".[bundle]"
+```
+
+Tauri packages the Python API as a platform-specific sidecar. Build on the same
+operating system and architecture as the target; PyInstaller does not
+cross-compile the backend.
+
 ## Run Leaves
 
 From the repository root, run:
@@ -29,10 +40,10 @@ From the repository root, run:
 ./scripts/dev.sh
 ```
 
-This starts the local FastAPI service on `127.0.0.1:8000` and launches the Tauri desktop app. For browser-only UI work, start the API with `cd apps/server && .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000`, then start Vite in another terminal with `cd apps/desktop && pnpm dev`.
+This starts the local FastAPI service on `127.0.0.1:8000` and launches the Tauri desktop app. In development, `scripts/dev.sh` owns the API process. Installed Tauri builds start and stop the bundled API sidecar automatically. For browser-only UI work, start the API with `cd apps/server && .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --no-access-log`, then start Vite in another terminal with `cd apps/desktop && pnpm dev`.
 
-The local database is written to `data/leaves.sqlite3` by default. Set `LEAVES_DATA_DIR` to use a different private local directory.
+During development, the database is written to `data/leaves.sqlite3`; packaged builds use the operating system's Leaves application-data directory. Set `LEAVES_DATA_DIR` to override either location. Credentials use the operating system credential manager (macOS Keychain, Windows Credential Manager, or Linux Secret Service). The API fails closed if no secure store is available.
 
 ## Current Scope
 
-The working foundation covers the dashboard, local Markdown folder indexing, and full-text search. Gmail and Google Calendar are shown as planned integrations; provider authorization, scheduling rules, and calendar writes are not implemented yet. The app uses a local menu-bar tray; close the window to hide Leaves, and choose **Quit Leaves** from the tray menu to exit.
+The working foundation covers the dashboard, local Markdown folder indexing, full-text search, task extraction, and local scheduling. Google OAuth uses a desktop client ID configured as `GOOGLE_OAUTH_CLIENT_ID`; connect Gmail and Google Calendar from **Connected Context Sources**. Gmail access is read-only and Calendar uses the owned-events scope. When unconnected, both integrations retain sample data for local preview. The app uses a local menu-bar tray; close the window to hide Leaves, and choose **Quit Leaves** from the tray menu to exit.

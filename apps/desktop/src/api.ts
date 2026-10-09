@@ -1,4 +1,19 @@
-const API_ROOT = import.meta.env.VITE_API_ROOT ?? 'http://127.0.0.1:8000/api'
+import { invoke, isTauri } from '@tauri-apps/api/core'
+
+const DEFAULT_API_ROOT = import.meta.env.VITE_API_ROOT ?? 'http://127.0.0.1:8000/api'
+let resolvedApiRoot: string | null = null
+
+async function getApiRoot(): Promise<string> {
+  if (resolvedApiRoot) return resolvedApiRoot
+  if (isTauri()) {
+    const port = await invoke<number>('backend_api_port')
+    const apiRoot = `http://127.0.0.1:${port}/api`
+    resolvedApiRoot = apiRoot
+    return apiRoot
+  }
+  resolvedApiRoot = DEFAULT_API_ROOT
+  return DEFAULT_API_ROOT
+}
 
 export type Source = {
   id: number
@@ -79,8 +94,18 @@ export type AvailabilitySettings = {
   notifications_enabled: string
 }
 
+export type TimeAwayBlock = {
+  id: number
+  title: string
+  start_time: string
+  end_time: string
+  created_at: string
+}
+
+export type GoogleConnectionStatus = { gmail: boolean; calendar: boolean }
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_ROOT}${path}`, {
+  const response = await fetch(`${await getApiRoot()}${path}`, {
     ...init,
     headers: { 'Content-Type': 'application/json', ...init?.headers },
   })
@@ -111,15 +136,26 @@ export const api = {
   availability: () => request<AvailabilitySettings>('/settings/availability'),
   updateAvailability: (payload: Partial<AvailabilitySettings>) =>
     request<AvailabilitySettings>('/settings/availability', { method: 'POST', body: JSON.stringify(payload) }),
+  timeAwayBlocks: () => request<TimeAwayBlock[]>('/settings/time-away'),
+  addTimeAwayBlock: (payload: { title: string; start_time: string; end_time: string }) =>
+    request<TimeAwayBlock>('/settings/time-away', { method: 'POST', body: JSON.stringify(payload) }),
+  removeTimeAwayBlock: (id: number) =>
+    request<{ deleted: boolean }>(`/settings/time-away/${id}`, { method: 'DELETE' }),
+
+  googleConnectionStatus: () => request<GoogleConnectionStatus>('/auth/google/status'),
+  startGoogleConnection: (service: 'gmail' | 'calendar') =>
+    request<{ authorization_url: string; state: string; service: string }>(`/auth/google/${service}/start`, { method: 'POST' }),
+  disconnectGoogle: (service: 'gmail' | 'calendar') =>
+    request<{ disconnected: boolean }>(`/auth/google/${service}`, { method: 'DELETE' }),
 
   // Gmail
   syncGmail: (label?: string) =>
-    request<{ synced_count: number }>(`/integrations/gmail/sync${label ? `?label=${encodeURIComponent(label)}` : ''}`, { method: 'POST' }),
+    request<{ synced_count: number; mode: 'sample' | 'live' }>(`/integrations/gmail/sync${label ? `?label=${encodeURIComponent(label)}` : ''}`, { method: 'POST' }),
   listGmail: (limit = 50) => request<any[]>(`/integrations/gmail/emails?limit=${limit}`),
   deleteGmail: (id: number) => request<{ deleted: boolean; original_email_deleted: boolean }>(`/integrations/gmail/emails/${id}`, { method: 'DELETE' }),
 
   // Calendar
-  syncCalendar: () => request<{ synced_count: number }>('/integrations/calendar/sync', { method: 'POST' }),
+  syncCalendar: () => request<{ synced_count: number; mode: 'sample' | 'live' }>('/integrations/calendar/sync', { method: 'POST' }),
   listCalendar: (limit = 50) => request<CalendarEventItem[]>(`/integrations/calendar/events?limit=${limit}`),
   addCalendarEvent: (event: { title: string; start_time: string; end_time: string; description?: string }) =>
     request<CalendarEventItem>('/integrations/calendar/events', { method: 'POST', body: JSON.stringify(event) }),

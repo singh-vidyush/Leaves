@@ -1,66 +1,89 @@
 import json
-import os
-from pathlib import Path
 from typing import Optional
+
+import keyring
+from keyring.errors import NoKeyringError
 
 from .config import data_directory
 
-CREDENTIALS_FILE_NAME = ".credentials.json"
+KEYRING_SERVICE = "com.leaves.desktop"
+LEGACY_CREDENTIALS_FILE = ".credentials.json"
 
 
-def _credentials_path() -> Path:
-    return data_directory() / CREDENTIALS_FILE_NAME
+class CredentialStoreUnavailable(RuntimeError):
+    """The operating system does not currently expose a secure credential store."""
 
 
-def _read_credentials() -> dict[str, str]:
-    path = _credentials_path()
+def _check_keyring() -> None:
+    try:
+        if keyring.get_keyring().priority <= 0:
+            raise NoKeyringError("No secure operating-system credential store is available.")
+    except Exception as error:
+        raise CredentialStoreUnavailable(
+            "Leaves needs an operating-system credential store (Keychain, Credential Manager, or Secret Service)."
+        ) from error
+
+
+def _migrate_legacy_file() -> None:
+    """Move credentials from the prototype's private JSON file into the OS store."""
+    path = data_directory() / LEGACY_CREDENTIALS_FILE
     if not path.is_file():
-        return {}
+        return
     try:
-        content = path.read_text(encoding="utf-8")
-        return json.loads(content)
-    except Exception:
-        return {}
-
-
-def _write_credentials(data: dict[str, str]) -> None:
-    path = _credentials_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Write with restricted permissions (0600 - owner read/write only)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    fd = os.open(path, flags, 0o600)
-    try:
-        with open(fd, "w", encoding="utf-8", closefd=False) as f:
-            json.dump(data, f, indent=2)
-    finally:
-        os.close(fd)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or any(not isinstance(v, str) for v in data.values()):
+            raise ValueError("Unexpected credential file format")
+        for service, secret in data.items():
+            account = str(service).strip().lower()
+            if keyring.get_password(KEYRING_SERVICE, account) is None:
+                keyring.set_password(KEYRING_SERVICE, account, secret)
+        path.unlink()
+    except Exception as error:
+        raise CredentialStoreUnavailable(
+            "Could not move existing credentials into the operating-system store; the original file was preserved."
+        ) from error
 
 
 def save_credential(service: str, secret: str) -> None:
-    """Securely stores an API key or token outside the database."""
+    """Store an API key or token using the operating-system credential manager."""
     clean_service = service.strip().lower()
     clean_secret = secret.strip()
-    data = _read_credentials()
-    data[clean_service] = clean_secret
-    _write_credentials(data)
+    _check_keyring()
+    try:
+        _migrate_legacy_file()
+        keyring.set_password(KEYRING_SERVICE, clean_service, clean_secret)
+    except Exception as error:
+        if isinstance(error, CredentialStoreUnavailable):
+            raise
+        raise CredentialStoreUnavailable("Could not save the credential to the operating-system store.") from error
 
 
 def get_credential(service: str) -> Optional[str]:
-    """Retrieves an API key or token without logging."""
+    """Retrieve a credential without logging or placing it in SQLite."""
     clean_service = service.strip().lower()
-    data = _read_credentials()
-    return data.get(clean_service)
+    _check_keyring()
+    try:
+        _migrate_legacy_file()
+        return keyring.get_password(KEYRING_SERVICE, clean_service)
+    except Exception as error:
+        if isinstance(error, CredentialStoreUnavailable):
+            raise
+        raise CredentialStoreUnavailable("Could not read the operating-system credential store.") from error
 
 
 def delete_credential(service: str) -> bool:
-    """Deletes an API key or token."""
     clean_service = service.strip().lower()
-    data = _read_credentials()
-    if clean_service in data:
-        del data[clean_service]
-        _write_credentials(data)
+    _check_keyring()
+    try:
+        _migrate_legacy_file()
+        if keyring.get_password(KEYRING_SERVICE, clean_service) is None:
+            return False
+        keyring.delete_password(KEYRING_SERVICE, clean_service)
         return True
-    return False
+    except Exception as error:
+        if isinstance(error, CredentialStoreUnavailable):
+            raise
+        raise CredentialStoreUnavailable("Could not delete the credential from the operating-system store.") from error
 
 
 def has_credential(service: str) -> bool:
@@ -68,7 +91,7 @@ def has_credential(service: str) -> bool:
 
 
 def mask_credential(secret: Optional[str]) -> str:
-    """Returns a masked representation, e.g. sk-...1234, never the raw key."""
+    """Return a masked representation, e.g. sk-...1234, never the raw key."""
     if not secret:
         return ""
     if len(secret) <= 8:

@@ -3,5 +3,19 @@
   "identifier": "default",
   "description": "Permissions for the Leaves desktop window",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "opener:allow-open-url",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/leaves-api",
+          "sidecar": true,
+          "args": []
+        }
+      ]
+    }
+  ]
 }

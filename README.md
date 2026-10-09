@@ -2,7 +2,7 @@
 
 > Go touch some grass
 
-Leaves is a local-first, agentic desktop app that understands tasks from connected sources and organizes the user's schedule. It has no chat interface. User-provided keys for supported model providers (initial candidates: OpenAI, Anthropic Claude, and Google Gemini) power task understanding; task-relevant context may be sent to the configured provider. Leaves-held data and credentials stay on-device. The current build foundation includes a dashboard, local Markdown indexing/search, and a macOS menu-bar shell. Gmail, Google Calendar, model-provider calls, schedule planning, notifications, and packaged backend delivery are not implemented yet.
+Leaves is a local-first, agentic desktop app that understands tasks from selected sources and organizes the user's schedule. It has no chat interface. Users can choose OpenAI, Anthropic, or Gemini for task understanding; only task-relevant context should be sent to that provider. Leaves-held data stays on-device, and credentials use the operating system's secure credential manager. The app includes a dashboard, local Markdown indexing/search, heuristic and model task extraction, Google OAuth for read-only Gmail and Google Calendar scheduling, and a macOS menu-bar shell. Local sample data remains available until Google accounts are connected.
 
 ## Development
 

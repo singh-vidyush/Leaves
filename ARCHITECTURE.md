@@ -17,22 +17,22 @@ Leaves is a local-first desktop agent. macOS is the first target, with Windows a
 ## Components
 
 ### Desktop Shell and UI
-- **Tauri 2** provides the native desktop shell and can launch a bundled sidecar process. The recommended division is for Tauri to own desktop lifecycle and the Python backend process, with the frontend using the local backend for indexing, search, and source management. [Tauri sidecar documentation](https://v2.tauri.app/learn/sidecar-nodejs/)
+- **Tauri 2** owns desktop lifecycle. Development uses `scripts/dev.sh`; installed builds bundle the Python API as a PyInstaller sidecar, launch it on loopback, and stop it when Leaves exits. The app's application-data directory contains the SQLite database.
 - **React/TypeScript** is the frontend stack in the current scaffold. The owner prefers a professional, minimal UI with manga-inspired details and light and dark modes. The main screen combines search with a daily dashboard.
 - Leaves should stay available in the macOS menu bar after the user opens it; it does not need to launch at sign-in. It should notify the user about schedule updates.
 - No Leaves account/login is planned. The user authenticates to connected providers and supplies their own model API key.
 
 ### Local Backend and Storage
-- **FastAPI** handles source ingestion, indexing, search, and urgency-aware scheduling logic in a local Python process.
+- **FastAPI** handles source ingestion, indexing, search, and urgency-aware scheduling logic in a local Python process. It binds only to `127.0.0.1:8000`.
 - **SQLite with FTS5** is the recommended first-release store for source metadata and indexed text. FTS5 is SQLite's built-in full-text search module. Start without a vector extension; add local vector search only if prioritized. [SQLite FTS5 documentation](https://www.sqlite.org/fts5.html)
-- The initial API recommendation is a loopback-only REST API, started and supervised by Tauri. Detailed local access controls and API shape remain to be specified.
+- The API contract and current endpoints are documented in `SPEC/API_CONTRACT.md`. It is a same-user loopback service; it must never bind to a public interface.
 
 ### Integrations and Scheduling
-- Prioritized sources are local Markdown, Gmail, and Google Calendar. The product should allow users to connect other apps that contain schedules; provider selection and a safe extension mechanism remain to be designed.
-- The app should run in the background, extract schedule-relevant details, assess task urgency, and arrange tasks. Automatic event additions and moves in Google Calendar are authorized, but deleting calendar events always requires user approval. Scheduling must respect user availability; schedule rules (working hours, breaks, and default task duration) will be configurable and decided later, with detailed conflict handling to be finalized.
+- Prioritized sources are local Markdown, Gmail, and Google Calendar. Schedule providers implement `ScheduleConnector`; Google Calendar is live when connected and falls back to labeled local sample data otherwise. Google OAuth uses PKCE and OS credential storage.
+- The app should run in the background, extract schedule-relevant details, assess task urgency, and arrange tasks. Automatic event additions and moves in Google Calendar are authorized, but deleting calendar events always requires user approval. Scheduling respects configurable working hours, breaks, time-away blocks, task duration, and existing commitments.
 - Gmail should be scanned in full by default, with a user option to restrict collection by label.
-- Leaves-held database, indexes, settings, and credentials remain on-device. Model requests send only task-relevant excerpts (relevant email, calendar, or Markdown excerpts) to the configured provider; for Gmail, requests include only emails identified as relevant to a task, not the entire inbox. When data is deleted from Leaves, only Leaves' local copy and index are removed, leaving original emails, files, and calendar events untouched.
-- Use the operating system's secure credential store for provider keys and integration tokens where supported. Never log secrets or place them in the regular SQLite content database.
+- Leaves-held database, indexes, settings, and credentials remain on-device. Model requests send only task-relevant Markdown and email excerpts to the configured provider; calendar event text stays local and only event times constrain scheduling. For Gmail, requests include only emails identified as relevant to a task, not the entire inbox. When data is deleted from Leaves, only Leaves' local copy and index are removed, leaving original emails, files, and calendar events untouched.
+- Use the operating system's secure credential store for provider keys and integration tokens where supported. The backend uses Python `keyring` and fails closed if no secure backend is available. Never log secrets or place them in SQLite. Integration scopes and lifecycle are specified in `SPEC/INTEGRATIONS.md`.
 
 ### Agent and Model Providers
 - Leaves is an agentic application: for the first release, it focuses strictly on understanding tasks and scheduling them (broader actions across connected apps are deferred). The UI remains dashboard/search without chat.
@@ -41,5 +41,5 @@ Leaves is a local-first desktop agent. macOS is the first target, with Windows a
 - Ollama is a possible later local-model provider. It is not required for the first cloud-provider workflow.
 
 ## Deployment
-- **Desktop product**: Tauri desktop shell, local Python backend, and on-device storage. macOS first; keep Windows and Linux possible.
-- **Evaluation demo**: Mentioned in the original notes as a containerized backend and web frontend. Whether this is still needed is undecided.
+- **Desktop product**: Tauri shell, platform-built Python sidecar, and on-device storage. macOS first; the sidecar must be built on the target OS/architecture.
+- **Evaluation demo**: deferred and not an MVP release gate. See `SPEC/RELEASE_ACCEPTANCE.md`.

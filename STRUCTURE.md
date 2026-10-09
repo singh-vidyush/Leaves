@@ -75,4 +75,4 @@ leaves/
 - Deleting something from Leaves removes only Leaves' local copy and index, leaving the original email, file, or calendar event untouched.
 
 ## Not Yet Implemented
-Gmail and Google Calendar connectors, model-provider adapters, schedule extraction and planning, calendar writes, notifications, export, and packaged Python sidecar delivery remain future work. No runtime data or credentials should be committed.
+Gmail and Google Calendar support live OAuth/API integrations, with local samples available before account connection. The current model-provider adapters, task extraction, scheduling, notifications, export, and packaged Python sidecar are in place. No runtime data or credentials should be committed.

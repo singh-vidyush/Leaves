@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { isTauri } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import {
   ArrowUpRight,
   CalendarDays,
@@ -31,6 +32,7 @@ import {
   type NotificationItem,
   type SearchResult,
   type TaskItem,
+  type TimeAwayBlock,
 } from './api'
 
 type Page = 'overview' | 'tasks' | 'calendar' | 'search' | 'sources' | 'settings'
@@ -112,7 +114,13 @@ export function App() {
 
   // Settings state
   const [modelSettings, setModelSettings] = useState<ModelSettings | null>(null)
+  const [credentialError, setCredentialError] = useState('')
+  const [googleConnections, setGoogleConnections] = useState({ gmail: false, calendar: false })
   const [availability, setAvailability] = useState<AvailabilitySettings | null>(null)
+  const [timeAwayBlocks, setTimeAwayBlocks] = useState<TimeAwayBlock[]>([])
+  const [timeAwayTitle, setTimeAwayTitle] = useState('')
+  const [timeAwayStart, setTimeAwayStart] = useState('')
+  const [timeAwayEnd, setTimeAwayEnd] = useState('')
   const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({})
   const [notifications, setNotifications] = useState<NotificationItem[]>([])
 
@@ -149,15 +157,25 @@ export function App() {
 
   const loadSettings = useCallback(async () => {
     try {
-      const m = await api.modelSettings()
-      const a = await api.availability()
-      const n = await api.notifications()
-      setModelSettings(m)
+      const [a, n, blocks] = await Promise.all([
+        api.availability(),
+        api.notifications(),
+        api.timeAwayBlocks(),
+      ])
       setAvailability(a)
       setNotifications(n)
+      setTimeAwayBlocks(blocks)
     } catch {
       // ignore
     }
+    try {
+      setModelSettings(await api.modelSettings())
+      setCredentialError('')
+    } catch {
+      setModelSettings(null)
+      setCredentialError('Model settings need an available operating-system credential store.')
+    }
+    try { setGoogleConnections(await api.googleConnectionStatus()) } catch { /* Secure storage may be unavailable. */ }
   }, [])
 
   useEffect(() => {
@@ -170,6 +188,12 @@ export function App() {
     }, 15_000)
     return () => window.clearInterval(interval)
   }, [refreshDashboard, loadTasks, loadCalendar, loadSettings])
+
+  useEffect(() => {
+    const refreshConnections = () => { void api.googleConnectionStatus().then(setGoogleConnections).catch(() => undefined) }
+    window.addEventListener('focus', refreshConnections)
+    return () => window.removeEventListener('focus', refreshConnections)
+  }, [])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -310,7 +334,7 @@ export function App() {
     setActionMessage('Syncing Gmail...')
     try {
       const res = await api.syncGmail()
-      setActionMessage(`Synced ${res.synced_count} emails`)
+      setActionMessage(`Synced ${res.synced_count} ${res.mode === 'live' ? 'Gmail' : 'sample'} emails.`)
       await refreshDashboard()
     } catch (err) {
       setActionMessage(err instanceof Error ? err.message : 'Gmail sync error')
@@ -321,14 +345,41 @@ export function App() {
 
   async function handleSyncCalendar() {
     setBusy(true)
-    setActionMessage('Syncing calendar commitments...')
+    setActionMessage('Syncing calendar...')
     try {
       const res = await api.syncCalendar()
-      setActionMessage(`Synced ${res.synced_count} commitments`)
+      setActionMessage(`Synced ${res.synced_count} ${res.mode === 'live' ? 'Google Calendar' : 'sample calendar'} events.`)
       await loadCalendar()
       await refreshDashboard()
     } catch (err) {
       setActionMessage(err instanceof Error ? err.message : 'Calendar sync error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleGoogleConnection(service: 'gmail' | 'calendar') {
+    setBusy(true)
+    try {
+      const { authorization_url } = await api.startGoogleConnection(service)
+      if (isTauri()) await openUrl(authorization_url)
+      else window.open(authorization_url, '_blank', 'noopener,noreferrer')
+      setActionMessage(`Finish Google ${service} authorization in your browser, then return to Leaves.`)
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : 'Could not start Google authorization')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleGoogleDisconnect(service: 'gmail' | 'calendar') {
+    setBusy(true)
+    try {
+      await api.disconnectGoogle(service)
+      setGoogleConnections(await api.googleConnectionStatus())
+      setActionMessage(`Google ${service} disconnected.`)
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : 'Could not disconnect Google')
     } finally {
       setBusy(false)
     }
@@ -402,6 +453,38 @@ export function App() {
       setActionMessage(err instanceof Error ? err.message : 'Export failed')
     } finally {
       setBusy(false)
+    }
+  }
+
+  async function handleAddTimeAway(event: FormEvent) {
+    event.preventDefault()
+    if (!timeAwayTitle.trim() || !timeAwayStart || !timeAwayEnd) return
+    setBusy(true)
+    try {
+      await api.addTimeAwayBlock({
+        title: timeAwayTitle.trim(),
+        start_time: new Date(timeAwayStart).toISOString(),
+        end_time: new Date(timeAwayEnd).toISOString(),
+      })
+      setTimeAwayTitle('')
+      setTimeAwayStart('')
+      setTimeAwayEnd('')
+      setTimeAwayBlocks(await api.timeAwayBlocks())
+      setActionMessage('Time away added to your scheduling constraints')
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : 'Could not add time away')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleRemoveTimeAway(blockId: number) {
+    try {
+      await api.removeTimeAwayBlock(blockId)
+      setTimeAwayBlocks(await api.timeAwayBlocks())
+      setActionMessage('Time away removed')
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : 'Could not remove time away')
     }
   }
 
@@ -816,7 +899,7 @@ export function App() {
               ))}
               {calendarEvents.length === 0 && (
                 <div style={{ textAlign: 'center', padding: '40px', color: 'var(--muted)' }}>
-                  No calendar commitments found. Click "Sync calendar" to load events.
+                  No calendar commitments found. Sync Google Calendar or load sample data to explore scheduling.
                 </div>
               )}
             </div>
@@ -856,7 +939,7 @@ export function App() {
           <div className="page-content">
             <h2>Connected Context Sources</h2>
             <p style={{ color: 'var(--muted)', fontSize: '14px', margin: '4px 0 20px' }}>
-              Manage local Markdown folders, Gmail, and Google Calendar. Original source files and accounts are never modified.
+              Manage local Markdown folders and connect Google services with read-only Gmail and event access.
             </p>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
@@ -877,13 +960,31 @@ export function App() {
 
               {/* Gmail Sync Card */}
               <div style={{ padding: '16px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px' }}>
-                <h3>Gmail Integration</h3>
+                <h3>Gmail {googleConnections.gmail ? 'Connected' : 'Not connected'}</h3>
                 <p style={{ fontSize: '13px', color: 'var(--muted)' }}>
-                  Scans all mail by default. Only emails relevant to tasks are sent to LLMs.
+                  Reads Gmail messages for task extraction. Email text sent to an AI provider is limited to relevant excerpts.
                 </p>
                 <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                  <button className="text-button" onClick={() => void (googleConnections.gmail ? handleGoogleDisconnect('gmail') : handleGoogleConnection('gmail'))} disabled={busy}>
+                    {googleConnections.gmail ? 'Disconnect Gmail' : 'Connect Gmail'}
+                  </button>
                   <button className="text-button" onClick={() => void handleSyncGmail()} disabled={busy}>
-                    Sync Gmail <RefreshCw size={14} />
+                    Sync email <RefreshCw size={14} />
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ padding: '16px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px' }}>
+                <h3>Google Calendar {googleConnections.calendar ? 'Connected' : 'Not connected'}</h3>
+                <p style={{ fontSize: '13px', color: 'var(--muted)' }}>
+                  Reads event times and writes events created by Leaves. Event titles and descriptions remain on this device.
+                </p>
+                <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                  <button className="text-button" onClick={() => void (googleConnections.calendar ? handleGoogleDisconnect('calendar') : handleGoogleConnection('calendar'))} disabled={busy}>
+                    {googleConnections.calendar ? 'Disconnect Calendar' : 'Connect Calendar'}
+                  </button>
+                  <button className="text-button" onClick={() => void handleSyncCalendar()} disabled={busy}>
+                    Sync calendar <RefreshCw size={14} />
                   </button>
                 </div>
               </div>
@@ -936,8 +1037,9 @@ export function App() {
             <div style={{ padding: '18px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px', marginBottom: '20px' }}>
               <h3>Active LLM Provider</h3>
               <p style={{ fontSize: '13px', color: 'var(--muted)' }}>
-                Leaves sends only task-relevant excerpts to your active provider.
+                Leaves sends relevant Markdown and email excerpts to your active provider. Calendar event text stays on this device.
               </p>
+              {credentialError && <p role="status" style={{ fontSize: '13px', color: 'var(--accent)' }}>{credentialError}</p>}
               <div style={{ display: 'flex', gap: '10px', margin: '14px 0' }}>
                 {['heuristic', 'openai', 'anthropic', 'gemini'].map((p) => (
                   <button
@@ -1027,6 +1129,16 @@ export function App() {
                     />
                   </div>
                   <div style={{ gridColumn: 'span 2' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+                      <input
+                        type="checkbox"
+                        checked={availability.notifications_enabled === 'true'}
+                        onChange={(e) => setAvailability({ ...availability, notifications_enabled: String(e.target.checked) })}
+                      />
+                      Show schedule update notifications
+                    </label>
+                  </div>
+                  <div style={{ gridColumn: 'span 2' }}>
                     <button
                       className="text-button"
                       onClick={() => void api.updateAvailability(availability).then(() => setActionMessage('Availability updated'))}
@@ -1036,6 +1148,28 @@ export function App() {
                   </div>
                 </div>
               )}
+            </div>
+
+            <div style={{ padding: '18px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px', marginBottom: '20px' }}>
+              <h3>Time Away</h3>
+              <p style={{ fontSize: '13px', color: 'var(--muted)' }}>
+                Add personal blocks that Leaves will keep clear when scheduling tasks.
+              </p>
+              <form onSubmit={(event) => void handleAddTimeAway(event)} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: '8px', margin: '14px 0' }}>
+                <input aria-label="Time away title" placeholder="Title" maxLength={120} value={timeAwayTitle} onChange={(e) => setTimeAwayTitle(e.target.value)} required />
+                <input aria-label="Time away starts" type="datetime-local" value={timeAwayStart} onChange={(e) => setTimeAwayStart(e.target.value)} required />
+                <input aria-label="Time away ends" type="datetime-local" value={timeAwayEnd} onChange={(e) => setTimeAwayEnd(e.target.value)} required />
+                <button className="text-button" type="submit" disabled={busy}>Add block</button>
+              </form>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {timeAwayBlocks.map((block) => (
+                  <div key={block.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', background: 'var(--sidebar)', borderRadius: '6px' }}>
+                    <span>{block.title} · {new Date(block.start_time).toLocaleString()} – {new Date(block.end_time).toLocaleString()}</span>
+                    <button className="icon-button" onClick={() => void handleRemoveTimeAway(block.id)} aria-label={`Remove ${block.title}`} title="Remove time-away block"><Trash2 size={14} /></button>
+                  </div>
+                ))}
+                {timeAwayBlocks.length === 0 && <div style={{ color: 'var(--muted)', fontSize: '13px' }}>No time-away blocks yet.</div>}
+              </div>
             </div>
 
             {/* Data Export & Backup */}
