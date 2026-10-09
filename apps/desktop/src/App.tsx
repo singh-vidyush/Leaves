@@ -58,6 +58,12 @@ function timeGreeting() {
   return 'Good evening'
 }
 
+function errorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error) return error.message
+  if (typeof error === 'string') return error
+  return fallback
+}
+
 function displayDate(date: Date) {
   return new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric' }).format(date)
 }
@@ -361,12 +367,29 @@ export function App() {
   async function handleGoogleConnection(service: 'gmail' | 'calendar') {
     setBusy(true)
     try {
-      const { authorization_url } = await api.startGoogleConnection(service)
-      if (isTauri()) await openUrl(authorization_url)
-      else window.open(authorization_url, '_blank', 'noopener,noreferrer')
+      let authorizationUrl: string
+      try {
+        ({ authorization_url: authorizationUrl } = await api.startGoogleConnection(service))
+      } catch (error) {
+        setActionMessage(errorMessage(error, 'Leaves could not create the Google authorization request.'))
+        return
+      }
+
+      if (isTauri()) {
+        try {
+          await openUrl(authorizationUrl)
+        } catch {
+          setActionMessage('Leaves created the Google sign-in request, but could not open your browser.')
+          return
+        }
+      } else {
+        const browserWindow = window.open(authorizationUrl, '_blank', 'noopener,noreferrer')
+        if (!browserWindow) {
+          setActionMessage('Your browser blocked the Google sign-in window. Allow pop-ups and try again.')
+          return
+        }
+      }
       setActionMessage(`Finish Google ${service} authorization in your browser, then return to Leaves.`)
-    } catch (err) {
-      setActionMessage(err instanceof Error ? err.message : 'Could not start Google authorization')
     } finally {
       setBusy(false)
     }
