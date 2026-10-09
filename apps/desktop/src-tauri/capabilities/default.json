@@ -6,7 +6,12 @@
   "permissions": [
     "core:default",
     "dialog:allow-open",
-    "opener:allow-open-url",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://accounts.google.com/**" }
+      ]
+    },
     {
       "identifier": "shell:allow-execute",
       "allow": [
