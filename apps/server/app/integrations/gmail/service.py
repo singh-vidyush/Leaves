@@ -1,8 +1,10 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import base64
 from html.parser import HTMLParser
 import json
 from typing import Any, Optional
+
+import httpx
 
 from app.core.database import connect
 from app.core.credentials import CredentialStoreUnavailable
@@ -80,7 +82,10 @@ def ingest_email(
         return email_id
 
 
-def sync_gmail(filter_label: Optional[str] = None) -> dict[str, Any]:
+def sync_gmail(
+    filter_label: Optional[str] = None,
+    after_timestamp: Optional[datetime] = None,
+) -> dict[str, Any]:
     """Sync live Gmail with read-only OAuth; use labeled sample data otherwise."""
     try:
         access_token = get_google_access_token("gmail")
@@ -92,6 +97,11 @@ def sync_gmail(filter_label: Optional[str] = None) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {access_token}"}
     base_url = "https://gmail.googleapis.com/gmail/v1/users/me"
     params: dict[str, Any] = {"maxResults": 100}
+    if after_timestamp:
+        # Gmail's `after` filter uses whole Unix seconds. The small overlap lets
+        # the caller recover messages when Gmail indexes them a little late.
+        after_epoch = int((after_timestamp - timedelta(minutes=2)).timestamp())
+        params["q"] = f"after:{after_epoch}"
     if filter_label:
         label_response = httpx.get(f"{base_url}/labels", headers=headers, timeout=20.0)
         if label_response.is_error:
@@ -102,6 +112,7 @@ def sync_gmail(filter_label: Optional[str] = None) -> dict[str, Any]:
         params["labelIds"] = [match]
 
     messages: list[dict[str, str]] = []
+    message_dates: list[tuple[str, str]] = []
     page_token = None
     with httpx.Client(timeout=30.0) as client:
         while True:
@@ -135,6 +146,7 @@ def sync_gmail(filter_label: Optional[str] = None) -> dict[str, Any]:
             snippet = item.get("snippet", "")
             label_names = item.get("labelIds", [])
             message_date = datetime.fromtimestamp(int(item.get("internalDate", "0")) / 1000, timezone.utc).isoformat()
+            message_dates.append((item["id"], message_date))
             ingest_email(
                 remote_id=item["id"],
                 subject=subject,
@@ -145,7 +157,10 @@ def sync_gmail(filter_label: Optional[str] = None) -> dict[str, Any]:
                 labels=label_names,
                 date=message_date,
             )
-    return {"synced_count": len(messages), "filter_label": filter_label, "mode": "live"}
+    result: dict[str, Any] = {"synced_count": len(messages), "filter_label": filter_label, "mode": "live"}
+    if after_timestamp is not None:
+        result["message_dates"] = message_dates
+    return result
 
 
 class GoogleApiError(RuntimeError):
@@ -242,14 +257,23 @@ def delete_email_from_leaves(email_id: int) -> bool:
         return cursor.rowcount > 0
 
 
-def get_task_relevant_emails(limit: int = 15) -> list[dict[str, Any]]:
+def get_task_relevant_emails(limit: int = 15, remote_ids: Optional[list[str]] = None) -> list[dict[str, Any]]:
     """
     Filters only task-relevant emails to comply with the non-negotiable rule:
     'Send only task-relevant context to cloud LLMs, rather than sending the entire inbox.'
     """
     ACTION_KEYWORDS = ["urgent", "review", "deadline", "by tomorrow", "please", "action", "follow up", "due", "important"]
     with connect() as db:
-        rows = db.execute("SELECT id, remote_id, subject, sender, snippet, body, date FROM emails ORDER BY date DESC").fetchall()
+        query = "SELECT id, remote_id, subject, sender, snippet, body, date FROM emails"
+        params: tuple[Any, ...] = ()
+        if remote_ids is not None:
+            if not remote_ids:
+                return []
+            placeholders = ",".join("?" for _ in remote_ids)
+            query += f" WHERE remote_id IN ({placeholders})"
+            params = tuple(remote_ids)
+        query += " ORDER BY date DESC"
+        rows = db.execute(query, params).fetchall()
         candidates = []
         for r in rows:
             text = f"{r['subject']} {r['snippet']} {r['body']}".lower()

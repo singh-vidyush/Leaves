@@ -151,6 +151,13 @@ export const api = {
   // Gmail
   syncGmail: (label?: string) =>
     request<{ synced_count: number; mode: 'sample' | 'live' }>(`/integrations/gmail/sync${label ? `?label=${encodeURIComponent(label)}` : ''}`, { method: 'POST' }),
+  pollGmailAutomation: () => request<{
+    connected: boolean
+    baseline: boolean
+    new_emails: number
+    new_tasks: number
+    scheduled_count: number
+  }>('/automation/gmail/poll', { method: 'POST' }),
   listGmail: (limit = 50) => request<any[]>(`/integrations/gmail/emails?limit=${limit}`),
   deleteGmail: (id: number) => request<{ deleted: boolean; original_email_deleted: boolean }>(`/integrations/gmail/emails/${id}`, { method: 'DELETE' }),
 

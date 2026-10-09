@@ -41,6 +41,7 @@ from app.services.scheduling import (
 )
 from app.services.search import search_documents
 from app.services.task_extraction import extract_and_store_tasks, list_tasks, update_task_status
+from app.services.gmail_automation import poll_gmail_and_schedule_urgent_tasks
 
 
 @asynccontextmanager
@@ -281,6 +282,15 @@ def delete_time_away_block(block_id: int) -> dict:
 
 
 # --- Gmail Integration ---
+
+@app.post("/api/automation/gmail/poll")
+def poll_gmail_automation_endpoint() -> dict:
+    try:
+        return poll_gmail_and_schedule_urgent_tasks()
+    except CredentialStoreUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except (GoogleOAuthError, RuntimeError) as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
 
 @app.post("/api/integrations/gmail/sync")
 def sync_gmail_endpoint(label: Optional[str] = None) -> dict:

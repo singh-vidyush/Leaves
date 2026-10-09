@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { isTauri } from '@tauri-apps/api/core'
 import { open } from '@tauri-apps/plugin-dialog'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -89,6 +89,7 @@ function formatTime(iso: string) {
 }
 
 export function App() {
+  const gmailAutomationRunning = useRef(false)
   const [page, setPage] = useState<Page>('overview')
   const [theme, setTheme] = useState<Theme>(() => {
     const saved = localStorage.getItem('leaves-theme')
@@ -200,6 +201,36 @@ export function App() {
     window.addEventListener('focus', refreshConnections)
     return () => window.removeEventListener('focus', refreshConnections)
   }, [])
+
+  useEffect(() => {
+    let active = true
+    const pollGmail = async () => {
+      if (gmailAutomationRunning.current) return
+      gmailAutomationRunning.current = true
+      try {
+        const result = await api.pollGmailAutomation()
+        if (!active || !result.connected || result.baseline) return
+        if (result.new_emails > 0) await refreshDashboard()
+        if (result.scheduled_count > 0) {
+          setActionMessage(`Automatically scheduled ${result.scheduled_count} urgent email task${result.scheduled_count === 1 ? '' : 's'}.`)
+          await Promise.all([loadTasks(), loadCalendar(), refreshDashboard()])
+        }
+      } catch {
+        // Gmail automation retries on the next interval or when the app regains focus.
+      } finally {
+        gmailAutomationRunning.current = false
+      }
+    }
+    const onFocus = () => { void pollGmail() }
+    void pollGmail()
+    const interval = window.setInterval(() => { void pollGmail() }, 5 * 60 * 1000)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      active = false
+      window.clearInterval(interval)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [loadTasks, loadCalendar, refreshDashboard])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme

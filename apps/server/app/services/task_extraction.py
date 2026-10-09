@@ -38,6 +38,11 @@ def gather_permitted_task_context(max_docs: int = 10) -> list[dict[str, Any]]:
 
 def extract_and_store_tasks() -> list[dict[str, Any]]:
     context = gather_permitted_task_context()
+    return extract_and_store_tasks_from_context(context)
+
+
+def extract_and_store_tasks_from_context(context: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extract and upsert tasks from an explicitly selected source context."""
     if not context:
         return []
 
