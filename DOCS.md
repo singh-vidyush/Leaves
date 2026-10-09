@@ -21,7 +21,6 @@ This map links current product decisions, implementation boundaries, release cri
 - [GUIDES/SETUP.md](GUIDES/SETUP.md): Step-by-step setup guide for Rust, Python, Node.js, and pnpm.
 - [GUIDES/CONTRIBUTING.md](GUIDES/CONTRIBUTING.md): Guidelines for adding context integrations.
 - [GUIDES/DEPLOYMENT.md](GUIDES/DEPLOYMENT.md): Instructions for building the Tauri desktop product and evaluation demo.
-- [GUIDES/DISTRIBUTION.md](GUIDES/DISTRIBUTION.md): Downloading signed Mac installers and configuring GitHub release builds.
 
 ## 4. Project Management
 - [ROADMAP.md](ROADMAP.md): Proposed MVP → Beta → v1.0 phases; no release dates set.

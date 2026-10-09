@@ -13,13 +13,3 @@ See [GUIDES/SETUP.md](GUIDES/SETUP.md) for prerequisites. After installing depen
 ```
 
 Project decisions and specifications are indexed in [DOCS.md](DOCS.md).
-
-## Download Leaves
-
-The signed macOS installer will be available on the [GitHub Releases page](https://github.com/singh-vidyush/Leaves/releases) after the release signing setup is complete. Then you can download and open it from Terminal with:
-
-```sh
-curl -fL "https://github.com/singh-vidyush/Leaves/releases/latest/download/Leaves-macos-$(uname -m).dmg" -o Leaves.dmg && open Leaves.dmg
-```
-
-See [the distribution guide](GUIDES/DISTRIBUTION.md) for release setup and installation details.
