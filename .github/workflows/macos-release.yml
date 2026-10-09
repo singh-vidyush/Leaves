@@ -9,9 +9,17 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
-    name: Build and publish macOS installer
-    runs-on: macos-latest
+  build-and-package:
+    name: Build macOS installer (${{ matrix.asset_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            asset_arch: arm64
+          - runner: macos-15-intel
+            asset_arch: x86_64
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -74,29 +82,7 @@ jobs:
         working-directory: apps/server
         run: .venv/bin/python -m pytest tests -q
 
-      - name: Require Apple signing and notarization credentials
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          missing=()
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
-            if [ -z "${!name:-}" ]; then missing+=("$name"); fi
-          done
-          if [ "${#missing[@]}" -gt 0 ]; then
-            printf 'Configure these GitHub Actions secrets before creating a macOS release: %s\n' "${missing[*]}" >&2
-            exit 1
-          fi
-
       - name: Build app and disk image
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: ./scripts/build_macos.sh
 
       - name: Verify packaged app and sidecar
@@ -118,7 +104,6 @@ jobs:
             exit 1
           fi
           plutil -lint "$APP_PATH/Contents/Info.plist"
-          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           APP_EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Contents/Info.plist")
           APP_EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/$APP_EXECUTABLE"
           echo "App executable declared in Info.plist: $APP_EXECUTABLE_PATH"
@@ -140,7 +125,8 @@ jobs:
           echo "Found app: $APP_PATH"
           echo "Found bundled backend: $SIDECAR"
           echo "Found installer: $DMG_PATH"
-          if ! cp "$DMG_PATH" "$RUNNER_TEMP/Leaves-macos.dmg"; then
+          STAGED_DMG="$RUNNER_TEMP/Leaves-macos-${{ matrix.asset_arch }}.dmg"
+          if ! cp "$DMG_PATH" "$STAGED_DMG"; then
             echo "Could not stage the DMG from $DMG_PATH to RUNNER_TEMP=$RUNNER_TEMP" >&2
             exit 1
           fi
@@ -178,28 +164,39 @@ jobs:
           print("Packaged backend health and SQLite initialization passed")
           PY
 
-      - name: Notarize and staple installer
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Create installer checksum
         run: |
-          xcrun notarytool submit "$RUNNER_TEMP/Leaves-macos.dmg" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait
-          xcrun stapler staple "$RUNNER_TEMP/Leaves-macos.dmg"
-          xcrun stapler validate "$RUNNER_TEMP/Leaves-macos.dmg"
+          cd "$RUNNER_TEMP"
+          shasum -a 256 "Leaves-macos-${{ matrix.asset_arch }}.dmg" > "Leaves-macos-${{ matrix.asset_arch }}.dmg.sha256"
+
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Leaves-macos-${{ matrix.asset_arch }}
+          path: |
+            ${{ runner.temp }}/Leaves-macos-${{ matrix.asset_arch }}.dmg
+            ${{ runner.temp }}/Leaves-macos-${{ matrix.asset_arch }}.dmg.sha256
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish macOS installers
+    needs: build-and-package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/Leaves-macos.dmg" --clobber
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/Leaves-macos-*.dmg dist/Leaves-macos-*.dmg.sha256 \
+              --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/Leaves-macos.dmg" \
-              --title "Leaves ${GITHUB_REF_NAME}" \
-              --generate-notes
+            gh release create "$GITHUB_REF_NAME" dist/Leaves-macos-*.dmg dist/Leaves-macos-*.dmg.sha256 \
+              --repo "$GITHUB_REPOSITORY" --title "Leaves ${GITHUB_REF_NAME}" --generate-notes
           fi

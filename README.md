@@ -5,33 +5,44 @@ tasks and schedules. The desktop shell is built with Tauri and React; its local
 API is built with FastAPI. User data stays on the device, and provider
 credentials use the operating system's secure credential store.
 
-## Distribution status
+## Install Leaves on macOS
 
-Leaves publishes a macOS installer when a `v*` version tag is pushed. Download
-the latest installer here:
+Leaves is free to install. The app is currently unsigned, so macOS may show a
+Gatekeeper warning the first time it opens. The installer needs only the
+macOS-provided `curl`, `bash`, `hdiutil`, `ditto`, and `shasum` tools; it does
+not need Python, Node.js, Rust, Homebrew, or `sudo` for a normal installation.
 
-[Download Leaves for macOS](https://github.com/singh-vidyush/Leaves/releases/latest/download/Leaves-macos.dmg)
+Run this command in Terminal:
 
-[View Leaves releases](https://github.com/singh-vidyush/Leaves/releases)
+```sh
+curl -fsSL https://raw.githubusercontent.com/singh-vidyush/Leaves/main/scripts/install.sh | bash
+```
 
-The current `v0.1.0` installer is unsigned, so Gatekeeper may report that the
-app is damaged. New releases require Apple Developer ID signing and
-notarization credentials in GitHub Actions; the workflow will not publish an
-unsigned installer. It runs the backend tests, builds the app and disk image on
-a macOS runner, verifies the bundled Python sidecar, smoke tests the packaged
-backend, and notarizes the installer before publishing it.
+The installer detects Apple Silicon or Intel, downloads the matching DMG from
+the latest GitHub Release, verifies its published SHA-256 checksum, and replaces
+an existing Leaves.app. It installs to `/Applications` when writable, or to
+`~/Applications` if macOS permissions prevent that. After installation, open
+Leaves from Finder or run the `open -a` command printed by the installer.
 
-Before triggering a signed release, add these repository Actions secrets under
-**Settings → Secrets and variables → Actions**:
+If Gatekeeper blocks the unsigned app:
 
-- `APPLE_CERTIFICATE`: base64 encoded Developer ID Application `.p12` certificate
-- `APPLE_CERTIFICATE_PASSWORD`: password used when exporting that `.p12`
-- `APPLE_ID`: Apple Developer account email
-- `APPLE_PASSWORD`: app-specific password for notarization
-- `APPLE_TEAM_ID`: Apple Developer Team ID
+1. Attempt to open Leaves from Applications.
+2. Open **System Settings → Privacy & Security**.
+3. Select **Open Anyway** for Leaves if it is available.
+4. Confirm that you want to open the app.
 
-Tauri infers the signing identity from the imported certificate. Keep these
-values in GitHub Secrets; do not commit them or paste them into chat.
+You can also download Leaves directly from [GitHub Releases](https://github.com/singh-vidyush/Leaves/releases/latest).
+The current `v0.1.0` release has a legacy [DMG download](https://github.com/singh-vidyush/Leaves/releases/latest/download/Leaves-macos.dmg)
+without a published checksum, so the curl installer intentionally refuses it.
+The architecture-specific DMG and checksum links are available after a new
+release is published: [Apple Silicon DMG](https://github.com/singh-vidyush/Leaves/releases/latest/download/Leaves-macos-arm64.dmg) ·
+[Intel DMG](https://github.com/singh-vidyush/Leaves/releases/latest/download/Leaves-macos-x86_64.dmg).
+
+To update or reinstall Leaves, run the same curl command again. It verifies
+the new download before replacing the app; your existing app data is kept.
+
+The release workflow builds separate Apple Silicon and Intel installers and
+publishes a SHA-256 checksum with each DMG when a version tag is pushed.
 
 ## Requirements
 
@@ -80,17 +91,7 @@ This creates `Leaves.app` and a `.dmg` under
 as a Tauri sidecar and starts automatically. User data is stored persistently
 in the macOS application data directory. Build on the Mac architecture you
 intend to use; PyInstaller does not cross-compile the sidecar.
-The local build is unsigned unless a signing identity is configured. Sharing
-the app without Gatekeeper warnings requires Apple Developer ID signing and
-notarization.
-
-As a temporary workaround for the current unsigned release, if you trust the
-downloaded Leaves app, move it to Applications and remove its quarantine flag
-in Terminal:
-
-```sh
-xattr -dr com.apple.quarantine /Applications/Leaves.app
-```
+The local build is unsigned and may show a Gatekeeper warning on first launch.
 
 To publish a new version, update the version in `apps/desktop/package.json`,
 `apps/desktop/src-tauri/tauri.conf.json`,
