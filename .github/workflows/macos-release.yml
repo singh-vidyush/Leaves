@@ -87,8 +87,9 @@ jobs:
           DMG_PATH=$(find "$BUNDLE_DIR" -maxdepth 3 -type f -name '*.dmg' -print -quit)
           test -n "$APP_PATH" && test -d "$APP_PATH"
           test -n "$DMG_PATH" && test -s "$DMG_PATH"
-          test -x "$APP_PATH/Contents/MacOS/Leaves"
           plutil -lint "$APP_PATH/Contents/Info.plist"
+          APP_EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Contents/Info.plist")
+          test -x "$APP_PATH/Contents/MacOS/$APP_EXECUTABLE"
           HOST_TRIPLE=$(rustc -vV | sed -n 's/^host: //p')
           SIDECAR="$APP_PATH/Contents/MacOS/leaves-api-$HOST_TRIPLE"
           test -x "$SIDECAR"
