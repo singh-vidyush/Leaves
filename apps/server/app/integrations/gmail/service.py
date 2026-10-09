@@ -105,7 +105,7 @@ def sync_gmail(
     if filter_label:
         label_response = httpx.get(f"{base_url}/labels", headers=headers, timeout=20.0)
         if label_response.is_error:
-            raise GoogleApiError("Gmail labels could not be read. Check the granted Gmail permission.")
+            raise GoogleApiError(_gmail_api_error(label_response, "Gmail labels could not be read"))
         match = next((item["id"] for item in label_response.json().get("labels", []) if item.get("name") == filter_label), None)
         if match is None:
             return {"synced_count": 0, "filter_label": filter_label, "mode": "live"}
@@ -115,13 +115,25 @@ def sync_gmail(
     message_dates: list[tuple[str, str]] = []
     page_token = None
     with httpx.Client(timeout=30.0) as client:
+        refreshed_after_unauthorized = False
+
+        def gmail_get(url: str, request_params: dict[str, Any]) -> httpx.Response:
+            nonlocal access_token, refreshed_after_unauthorized
+            response = client.get(url, headers=headers, params=request_params)
+            if response.status_code == 401 and not refreshed_after_unauthorized:
+                access_token = get_google_access_token("gmail", force_refresh=True)
+                headers["Authorization"] = f"Bearer {access_token}"
+                refreshed_after_unauthorized = True
+                response = client.get(url, headers=headers, params=request_params)
+            return response
+
         while True:
             page_params = {**params}
             if page_token:
                 page_params["pageToken"] = page_token
-            response = client.get(f"{base_url}/messages", headers=headers, params=page_params)
+            response = gmail_get(f"{base_url}/messages", page_params)
             if response.is_error:
-                raise GoogleApiError("Gmail messages could not be listed. Reconnect Gmail and try again.")
+                raise GoogleApiError(_gmail_api_error(response, "Gmail messages could not be listed"))
             page = response.json()
             messages.extend(page.get("messages", []))
             page_token = page.get("nextPageToken")
@@ -129,13 +141,12 @@ def sync_gmail(
                 break
 
         for message in messages:
-            response = client.get(
+            response = gmail_get(
                 f"{base_url}/messages/{message['id']}",
-                headers=headers,
-                params={"format": "full"},
+                {"format": "full"},
             )
             if response.is_error:
-                raise GoogleApiError("A Gmail message could not be read. Reconnect Gmail and try again.")
+                raise GoogleApiError(_gmail_api_error(response, "A Gmail message could not be read"))
             item = response.json()
             payload = item.get("payload", {})
             message_headers = {h.get("name", "").lower(): h.get("value", "") for h in payload.get("headers", [])}
@@ -165,6 +176,43 @@ def sync_gmail(
 
 class GoogleApiError(RuntimeError):
     pass
+
+
+def _gmail_api_error(response: httpx.Response, action: str) -> str:
+    """Translate Google's API response into a useful, non-sensitive error."""
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    error = payload.get("error", {}) if isinstance(payload, dict) else {}
+    if not isinstance(error, dict):
+        error = {}
+    message = error.get("message")
+    reasons = error.get("errors", [])
+    reason = reasons[0].get("reason") if reasons and isinstance(reasons[0], dict) else ""
+    status = response.status_code
+
+    if status == 401:
+        detail = "Google rejected the Gmail access token (401). Try again to refresh it; if this repeats, reconnect Gmail."
+    elif status == 403 and reason == "accessNotConfigured":
+        detail = "The Gmail API is not enabled for this Google Cloud project. Enable Gmail API in Google Cloud Console, then try again."
+    elif status == 403 and reason in {"insufficientPermissions", "forbidden"}:
+        detail = "Google denied the Gmail permission. Reconnect Gmail and approve read access to messages."
+    elif status == 403 and reason in {"rateLimitExceeded", "userRateLimitExceeded"}:
+        detail = "Google rate limited Gmail requests. Wait a few minutes and try again."
+    elif status == 429:
+        detail = "Google rate limited Gmail requests. Wait a few minutes and try again."
+    elif status == 400:
+        detail = "Google rejected the Gmail request (400)."
+    elif status >= 500:
+        detail = f"Google's Gmail service is temporarily unavailable ({status}). Try again shortly."
+    else:
+        detail = f"Google rejected the Gmail request ({status})."
+
+    if isinstance(message, str) and message.strip():
+        clean_message = " ".join(message.split())[:240]
+        detail = f"{detail} Google says: {clean_message}"
+    return f"{action}. {detail}"
 
 
 class _HTMLText(HTMLParser):

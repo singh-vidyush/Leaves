@@ -160,7 +160,7 @@ def complete_google_oauth(state: str, code: str) -> str:
     return transaction.service
 
 
-def get_google_access_token(service: str) -> str:
+def get_google_access_token(service: str, *, force_refresh: bool = False) -> str:
     if service not in SCOPES:
         raise ValueError("Google service must be 'gmail' or 'calendar'.")
     raw = get_credential(f"{TOKEN_SERVICE_PREFIX}{service}")
@@ -168,7 +168,7 @@ def get_google_access_token(service: str) -> str:
         raise GoogleOAuthError(f"Connect Google {service.title()} before syncing.")
     try:
         token: dict[str, Any] = json.loads(raw)
-        if token.get("access_token") and int(token.get("expires_at", 0)) > int(time.time()) + 60:
+        if not force_refresh and token.get("access_token") and int(token.get("expires_at", 0)) > int(time.time()) + 60:
             return str(token["access_token"])
         refresh_token = token.get("refresh_token")
         if not refresh_token:
