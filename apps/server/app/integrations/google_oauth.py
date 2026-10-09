@@ -104,7 +104,23 @@ def complete_google_oauth(state: str, code: str) -> str:
             },
             timeout=20.0,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            google_error = payload.get("error") if isinstance(payload, dict) else None
+            if google_error == "invalid_client":
+                detail = "Google rejected the OAuth client ID. Check that the local value is a Desktop client ID from the configured project."
+            elif google_error == "invalid_grant":
+                detail = "Google rejected or expired the authorization code. Start a new sign-in; if this repeats, check that the same Desktop client is used throughout OAuth."
+            elif google_error == "redirect_uri_mismatch":
+                detail = "Google rejected the callback URL. Check the OAuth client type and loopback redirect configuration."
+            else:
+                detail = f"Google token exchange failed ({google_error or response.status_code})."
+            raise GoogleOAuthError(detail) from error
         token = response.json()
         access_token = token["access_token"]
         previous = get_credential(f"{TOKEN_SERVICE_PREFIX}{transaction.service}")
