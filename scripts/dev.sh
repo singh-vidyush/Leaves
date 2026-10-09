@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+export PATH="/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 SERVER_DIR="$ROOT_DIR/apps/server"

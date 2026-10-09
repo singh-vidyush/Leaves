@@ -32,12 +32,74 @@ def initialize_database() -> None:
             CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
                 title, content, path, content='documents', content_rowid='id'
             );
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS emails (
+                id INTEGER PRIMARY KEY,
+                remote_id TEXT NOT NULL UNIQUE,
+                subject TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                recipient TEXT NOT NULL DEFAULT '',
+                snippet TEXT NOT NULL DEFAULT '',
+                body TEXT NOT NULL DEFAULT '',
+                labels TEXT NOT NULL DEFAULT '[]',
+                date TEXT NOT NULL,
+                indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE VIRTUAL TABLE IF NOT EXISTS emails_fts USING fts5(
+                subject, snippet, body, content='emails', content_rowid='id'
+            );
+
+            CREATE TABLE IF NOT EXISTS calendar_events (
+                id INTEGER PRIMARY KEY,
+                remote_id TEXT UNIQUE,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'confirmed',
+                created_by TEXT NOT NULL DEFAULT 'external',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS tasks (
+                id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                source_type TEXT NOT NULL,
+                source_ref TEXT NOT NULL,
+                urgency_score INTEGER NOT NULL DEFAULT 5,
+                urgency_reason TEXT NOT NULL DEFAULT '',
+                suggested_duration_minutes INTEGER NOT NULL DEFAULT 30,
+                deadline TEXT,
+                scheduled_event_id INTEGER REFERENCES calendar_events(id) ON DELETE SET NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS notifications (
+                id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                event_id INTEGER REFERENCES calendar_events(id) ON DELETE SET NULL,
+                task_id INTEGER REFERENCES tasks(id) ON DELETE SET NULL,
+                is_read INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
 
 
 @contextmanager
 def connect() -> Iterator[sqlite3.Connection]:
+    initialize_database()
     connection = sqlite3.connect(database_path(), timeout=10)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys=ON")

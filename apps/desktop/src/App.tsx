@@ -8,23 +8,46 @@ import {
   ChevronRight,
   CircleHelp,
   Clock3,
+  Download,
   FileText,
   FolderPlus,
   Leaf,
+  ListTodo,
   LoaderCircle,
   Moon,
+  RefreshCw,
   Search,
   Settings2,
   Sun,
-  RefreshCw,
+  Trash2,
   X,
 } from 'lucide-react'
-import { api, type Dashboard, type SearchResult, type Source } from './api'
+import {
+  api,
+  type AvailabilitySettings,
+  type CalendarEventItem,
+  type Dashboard,
+  type ModelSettings,
+  type NotificationItem,
+  type SearchResult,
+  type TaskItem,
+} from './api'
 
-type Page = 'overview' | 'search' | 'sources'
+type Page = 'overview' | 'tasks' | 'calendar' | 'search' | 'sources' | 'settings'
 type Theme = 'light' | 'dark'
 
-const emptyDashboard: Dashboard = { source_count: 0, document_count: 0, sources: [], recent_documents: [] }
+const emptyDashboard: Dashboard = {
+  source_count: 0,
+  document_count: 0,
+  email_count: 0,
+  calendar_count: 0,
+  pending_task_count: 0,
+  unread_notifications: 0,
+  sources: [],
+  recent_documents: [],
+  upcoming_events: [],
+  high_priority_tasks: [],
+}
 
 function timeGreeting() {
   const hour = new Date().getHours()
@@ -37,7 +60,27 @@ function displayDate(date: Date) {
   return new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric' }).format(date)
 }
 
-function App() {
+function relativeDate(iso: string) {
+  try {
+    const diff = (Date.now() - new Date(iso).getTime()) / 1000
+    if (diff < 60) return 'Just now'
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
+    return `${Math.floor(diff / 86400)}d ago`
+  } catch {
+    return iso
+  }
+}
+
+function formatTime(iso: string) {
+  try {
+    return new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(iso))
+  } catch {
+    return iso
+  }
+}
+
+export function App() {
   const [page, setPage] = useState<Page>('overview')
   const [theme, setTheme] = useState<Theme>(() => {
     const saved = localStorage.getItem('leaves-theme')
@@ -47,18 +90,33 @@ function App() {
   const [dashboard, setDashboard] = useState<Dashboard>(emptyDashboard)
   const [serviceReady, setServiceReady] = useState(false)
   const [serviceError, setServiceError] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [actionMessage, setActionMessage] = useState('')
+
+  // Search state
   const [query, setQuery] = useState('')
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState('')
-  const [recursive, setRecursive] = useState(true)
+
+  // Sources state
   const [folderPath, setFolderPath] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [actionMessage, setActionMessage] = useState('')
+  const [recursive, setRecursive] = useState(true)
+
+  // Tasks state
+  const [tasks, setTasks] = useState<TaskItem[]>([])
+  const [taskFilter, setTaskFilter] = useState<'all' | 'pending' | 'scheduled' | 'completed'>('all')
+
+  // Calendar state
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEventItem[]>([])
+
+  // Settings state
+  const [modelSettings, setModelSettings] = useState<ModelSettings | null>(null)
+  const [availability, setAvailability] = useState<AvailabilitySettings | null>(null)
+  const [apiKeyInputs, setApiKeyInputs] = useState<Record<string, string>>({})
+  const [notifications, setNotifications] = useState<NotificationItem[]>([])
 
   const refreshDashboard = useCallback(async () => {
-    setLoading(true)
     try {
       const data = await api.dashboard()
       setDashboard(data)
@@ -67,17 +125,51 @@ function App() {
     } catch {
       setDashboard(emptyDashboard)
       setServiceReady(false)
-      setServiceError('Local service is not running yet.')
-    } finally {
-      setLoading(false)
+      setServiceError('Local service is connecting...')
+    }
+  }, [])
+
+  const loadTasks = useCallback(async () => {
+    try {
+      const data = await api.listTasks()
+      setTasks(data)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const loadCalendar = useCallback(async () => {
+    try {
+      const data = await api.listCalendar()
+      setCalendarEvents(data)
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  const loadSettings = useCallback(async () => {
+    try {
+      const m = await api.modelSettings()
+      const a = await api.availability()
+      const n = await api.notifications()
+      setModelSettings(m)
+      setAvailability(a)
+      setNotifications(n)
+    } catch {
+      // ignore
     }
   }, [])
 
   useEffect(() => {
     void refreshDashboard()
-    const interval = window.setInterval(() => void refreshDashboard(), 30_000)
+    void loadTasks()
+    void loadCalendar()
+    void loadSettings()
+    const interval = window.setInterval(() => {
+      void refreshDashboard()
+    }, 15_000)
     return () => window.clearInterval(interval)
-  }, [refreshDashboard])
+  }, [refreshDashboard, loadTasks, loadCalendar, loadSettings])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -111,7 +203,7 @@ function App() {
     try {
       setSearchResults(await api.search(trimmed))
     } catch (error) {
-      setSearchError(error instanceof Error ? error.message : 'Search could not be completed.')
+      setSearchError(error instanceof Error ? error.message : 'Search error')
       setSearchResults([])
     } finally {
       setSearching(false)
@@ -119,84 +211,222 @@ function App() {
   }
 
   async function selectFolder() {
-    setActionMessage('')
     if (isTauri()) {
-      const selected = await open({ directory: true, multiple: false, title: 'Choose a Markdown folder' })
-      if (typeof selected === 'string') await addFolder(selected)
-      return
+      try {
+        const picked = await open({ directory: true, multiple: false })
+        if (typeof picked === 'string') {
+          setFolderPath(picked)
+          await addFolder(picked)
+        }
+      } catch {
+        // fallback
+      }
+    } else {
+      const manual = window.prompt('Enter full folder path to index:', folderPath || '/Users/vidyushsingh/Notes')
+      if (manual) {
+        setFolderPath(manual)
+        await addFolder(manual)
+      }
     }
-    setFolderPath((current) => current || '')
-    document.getElementById('folder-path-input')?.focus()
   }
 
-  async function addFolder(path = folderPath) {
-    if (!path.trim()) return
+  async function addFolder(targetPath = folderPath) {
+    if (!targetPath.trim()) return
     setBusy(true)
-    setActionMessage('Indexing Markdown files…')
+    setActionMessage('Scanning folder...')
     try {
-      const result = await api.addSource(path.trim(), recursive)
-      setActionMessage(`Folder added. ${result.indexed} Markdown files indexed.`)
+      const res = await api.addSource(targetPath.trim(), recursive)
+      setActionMessage(`Indexed ${res.indexed} notes`)
       setFolderPath('')
       await refreshDashboard()
-    } catch (error) {
-      setActionMessage(error instanceof Error ? error.message : 'Could not add that folder.')
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : 'Could not add folder')
     } finally {
       setBusy(false)
     }
   }
 
-  async function refreshSource(source: Source) {
+  async function refreshSource(id: number) {
     setBusy(true)
-    setActionMessage('Refreshing selected folder…')
+    setActionMessage('Refreshing index...')
     try {
-      const result = await api.refreshSource(source.id) as { indexed: number }
-      setActionMessage(`${result.indexed} Markdown files indexed.`)
+      await api.refreshSource(id)
+      setActionMessage('Source refreshed')
       await refreshDashboard()
-    } catch (error) {
-      setActionMessage(error instanceof Error ? error.message : 'Refresh failed.')
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : 'Refresh failed')
     } finally {
       setBusy(false)
     }
   }
 
-  async function removeSource(source: Source) {
-    if (!window.confirm(`Remove this folder from Leaves? Its original files will stay untouched.`)) return
+  async function removeSource(id: number) {
+    if (!window.confirm('Remove this folder from Leaves index? (Original files are never touched)')) return
     setBusy(true)
     try {
-      await api.removeSource(source.id)
-      setActionMessage('Folder removed from Leaves. Original files were not changed.')
+      await api.removeSource(id)
+      setActionMessage('Folder removed from index')
       await refreshDashboard()
-    } catch (error) {
-      setActionMessage(error instanceof Error ? error.message : 'Could not remove that folder.')
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : 'Could not remove folder')
     } finally {
       setBusy(false)
     }
   }
 
-  const setSearchAndRun = (value: string) => {
-    setQuery(value)
-    setPage('search')
-    if (value.trim()) {
-      window.setTimeout(() => {
-        const form = document.getElementById('search-form') as HTMLFormElement | null
-        form?.requestSubmit()
-      }, 0)
+  async function handleExtractTasks() {
+    setBusy(true)
+    setActionMessage('Extracting tasks & analyzing urgency...')
+    try {
+      const extracted = await api.extractTasks()
+      setActionMessage(`Extracted ${extracted.length} tasks with explainable urgency`)
+      await loadTasks()
+      await refreshDashboard()
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : 'Extraction error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleScheduleTask(taskId: number) {
+    setBusy(true)
+    setActionMessage('Scheduling task within availability windows...')
+    try {
+      await api.scheduleTask(taskId)
+      setActionMessage('Task scheduled into calendar!')
+      await loadTasks()
+      await loadCalendar()
+      await refreshDashboard()
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : 'Scheduling error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleSyncGmail() {
+    setBusy(true)
+    setActionMessage('Syncing Gmail...')
+    try {
+      const res = await api.syncGmail()
+      setActionMessage(`Synced ${res.synced_count} emails`)
+      await refreshDashboard()
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : 'Gmail sync error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleSyncCalendar() {
+    setBusy(true)
+    setActionMessage('Syncing calendar commitments...')
+    try {
+      const res = await api.syncCalendar()
+      setActionMessage(`Synced ${res.synced_count} commitments`)
+      await loadCalendar()
+      await refreshDashboard()
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : 'Calendar sync error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleResolveConflicts() {
+    setBusy(true)
+    setActionMessage('Resolving schedule conflicts...')
+    try {
+      const moved = await api.resolveConflicts()
+      setActionMessage(moved.length ? `Rescheduled ${moved.length} events to avoid conflicts` : 'No conflicts found!')
+      await loadCalendar()
+      await refreshDashboard()
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : 'Conflict resolution error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleDeleteCalendarEvent(eventId: number) {
+    // NON-NEGOTIABLE: Deleting calendar events always requires explicit user approval
+    const ok = window.confirm('Approval Required: Deleting calendar events requires explicit user confirmation. Do you approve deleting this event?')
+    if (!ok) return
+
+    setBusy(true)
+    try {
+      await api.deleteCalendarEvent(eventId, true)
+      setActionMessage('Calendar event deleted')
+      await loadCalendar()
+      await refreshDashboard()
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : 'Could not delete event')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleSaveModelConfig(activeProvider: string) {
+    setBusy(true)
+    try {
+      const key = apiKeyInputs[activeProvider]
+      await api.updateModelSettings({
+        active_provider: activeProvider,
+        provider: key ? activeProvider : undefined,
+        api_key: key || undefined,
+      })
+      setActionMessage(`Active provider set to ${activeProvider}`)
+      setApiKeyInputs((prev) => ({ ...prev, [activeProvider]: '' }))
+      await loadSettings()
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : 'Failed to update model settings')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleExport() {
+    setBusy(true)
+    try {
+      const data = await api.exportData()
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `leaves-export-${new Date().toISOString().split('T')[0]}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+      setActionMessage('Local data exported successfully')
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : 'Export failed')
+    } finally {
+      setBusy(false)
     }
   }
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <button className="brand" onClick={() => setPage('overview')} aria-label="Leaves home">
-          <span className="brand-mark"><Leaf size={18} strokeWidth={2.1} /></span>
-          <span className="brand-name">leaves<span className="brand-period">.</span></span>
-        </button>
+        <div className="brand-lockup">
+          <span className="brand-badge"><Leaf size={15} /></span>
+          <div className="brand-text">
+            <span className="brand-name">Leaves</span>
+            <span className="workspace-label">Local-first Agent</span>
+          </div>
+        </div>
 
-        <div className="workspace-label">YOUR SPACE</div>
-        <nav className="primary-nav" aria-label="Main navigation">
+        <nav className="nav-group">
           <button className={`nav-item ${page === 'overview' ? 'active' : ''}`} onClick={() => setPage('overview')}>
-            <span className="nav-glyph dashboard-glyph"><span /><span /><span /><span /></span>
-            <span>Overview</span>
+            <Leaf size={17} /><span>Overview</span>
+          </button>
+          <button className={`nav-item ${page === 'tasks' ? 'active' : ''}`} onClick={() => setPage('tasks')}>
+            <ListTodo size={17} /><span>Tasks & Urgency</span>
+            {dashboard.pending_task_count > 0 && <span className="section-count">{dashboard.pending_task_count}</span>}
+          </button>
+          <button className={`nav-item ${page === 'calendar' ? 'active' : ''}`} onClick={() => setPage('calendar')}>
+            <CalendarDays size={17} /><span>Calendar</span>
+            {dashboard.calendar_count > 0 && <span className="section-count">{dashboard.calendar_count}</span>}
           </button>
           <button className={`nav-item ${page === 'search' ? 'active' : ''}`} onClick={() => setPage('search')}>
             <Search size={17} /><span>Search</span><kbd>⌘ K</kbd>
@@ -204,275 +434,638 @@ function App() {
           <button className={`nav-item ${page === 'sources' ? 'active' : ''}`} onClick={() => setPage('sources')}>
             <FolderPlus size={17} /><span>Sources</span>
           </button>
+          <button className={`nav-item ${page === 'settings' ? 'active' : ''}`} onClick={() => setPage('settings')}>
+            <Settings2 size={17} /><span>Settings</span>
+          </button>
         </nav>
 
         <div className="sidebar-section-head">
           <span>CONNECTED</span><span className="section-count">{dashboard.source_count}</span>
         </div>
         <div className="connected-list">
-          {dashboard.sources.length ? dashboard.sources.map((source) => (
-            <button key={source.id} className="connected-source" onClick={() => setPage('sources')} title={source.path}>
-              <span className="source-dot markdown-dot"><FileText size={13} /></span>
-              <span className="source-name">{source.path.split('/').filter(Boolean).at(-1) ?? source.path}</span>
-              <span className="source-online" />
-            </button>
-          )) : <div className="sidebar-empty">Add your first folder</div>}
+          {dashboard.sources.length ? (
+            dashboard.sources.map((source) => (
+              <button key={source.id} className="connected-source" onClick={() => setPage('sources')} title={source.path}>
+                <span className="source-dot markdown-dot"><FileText size={13} /></span>
+                <span className="source-name">{source.path.split('/').filter(Boolean).at(-1) ?? source.path}</span>
+                <span className="source-online" />
+              </button>
+            ))
+          ) : (
+            <div className="sidebar-empty">Add notes or connect Gmail</div>
+          )}
         </div>
 
         <div className="sidebar-bottom">
           <div className="local-note"><span className="local-pulse" /> Stored on this device</div>
-          <button className="nav-item settings-link" onClick={() => setPage('sources')}><Settings2 size={17} /><span>Settings & sources</span></button>
+          <button className="nav-item settings-link" onClick={() => setPage('settings')}>
+            <Settings2 size={17} /><span>Settings & Keys</span>
+          </button>
           <div className="profile-row">
             <div className="profile-avatar">L</div>
-            <div className="profile-copy"><strong>Leaves</strong><span>Personal workspace</span></div>
-            <button className="icon-button small" aria-label="About Leaves" title="About Leaves"><CircleHelp size={16} /></button>
+            <div className="profile-copy">
+              <strong>Leaves</strong>
+              <span>Personal workspace</span>
+            </div>
+            <button className="icon-button small" onClick={() => setPage('settings')} aria-label="Settings" title="Settings">
+              <CircleHelp size={16} />
+            </button>
           </div>
         </div>
       </aside>
 
       <main className="main-area">
         <header className="topbar">
-          <div className="breadcrumbs"><span>Leaves</span><ChevronRight size={14} /><strong>{pageTitle(page)}</strong></div>
+          <div className="breadcrumbs">
+            <span>Leaves</span><ChevronRight size={14} />
+            <strong>{page.toUpperCase()}</strong>
+          </div>
           <div className="topbar-right">
-            <span className={`service-state ${serviceReady ? 'online' : 'offline'}`}><span />{serviceReady ? 'Local and ready' : 'Connecting locally'}</span>
-            <button className="icon-button theme-button" onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title="Toggle appearance">
+            {actionMessage && <span style={{ fontSize: '13px', color: 'var(--accent)', fontWeight: 500 }}>{actionMessage}</span>}
+            <span className={`service-state ${serviceReady ? 'online' : 'offline'}`}>
+              <span />{serviceReady ? 'Local and ready' : 'Connecting'}
+            </span>
+            <button
+              className="icon-button theme-button"
+              onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
+              aria-label="Toggle theme"
+            >
               {theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}
             </button>
-            <div className="avatar-small">L</div>
           </div>
         </header>
 
-        {serviceError && <div className="service-banner"><span>{serviceError} Start the local API to index and search your notes.</span><code>cd apps/server &amp;&amp; uv run fastapi dev</code></div>}
+        {serviceError && (
+          <div className="service-banner">
+            <span>{serviceError}</span>
+          </div>
+        )}
 
-        {page === 'overview' && <Overview
-          dashboard={dashboard}
-          loading={loading}
-          dateText={dateText}
-          onSearch={(value) => setSearchAndRun(value)}
-          onNavigate={setPage}
-          onAddFolder={() => void selectFolder()}
-          onOpenRecent={(item) => setSearchAndRun(item.title)}
-        />}
-        {page === 'search' && <SearchPage
-          query={query}
-          setQuery={setQuery}
-          runSearch={runSearch}
-          results={searchResults}
-          searching={searching}
-          error={searchError}
-          hasSources={dashboard.source_count > 0}
-          onAddFolder={() => void selectFolder()}
-        />}
-        {page === 'sources' && <SourcesPage
-          sources={dashboard.sources}
-          documentCount={dashboard.document_count}
-          recursive={recursive}
-          setRecursive={setRecursive}
-          folderPath={folderPath}
-          setFolderPath={setFolderPath}
-          busy={busy}
-          actionMessage={actionMessage}
-          onChooseFolder={() => void selectFolder()}
-          onAddFolder={() => void addFolder()}
-          onRefresh={refreshSource}
-          onRemove={removeSource}
-        />}
+        {/* OVERVIEW PAGE */}
+        {page === 'overview' && (
+          <div className="page-content overview-page">
+            <div className="welcome-row">
+              <div>
+                <div className="eyebrow"><span className="eyebrow-line" />{dateText}</div>
+                <h1>{timeGreeting()}<span className="title-comma">,</span> take a breath.</h1>
+                <p className="welcome-subtitle">Local agent scheduling your day with explainable priorities.</p>
+              </div>
+              <div className="sun-stamp" aria-hidden="true"><span>葉</span><i /></div>
+            </div>
+
+            <form
+              className="hero-search"
+              onSubmit={(e) => {
+                e.preventDefault()
+                const val = (new FormData(e.currentTarget).get('q') as string) || ''
+                setQuery(val)
+                setPage('search')
+                void api.search(val).then(setSearchResults)
+              }}
+            >
+              <Search size={20} />
+              <input id="main-search-input" name="q" placeholder="Search your notes, emails, and plans…" />
+              <kbd>⌘ K</kbd>
+              <button className="search-arrow" aria-label="Search"><ArrowUpRight size={19} /></button>
+            </form>
+
+            <div className="overview-grid">
+              {/* Day / Schedule Panel */}
+              <section className="panel day-panel">
+                <div className="panel-heading">
+                  <div><div className="eyebrow muted-eyebrow">YOUR DAY</div><h2>Schedule</h2></div>
+                  <button className="text-button" onClick={() => void handleResolveConflicts()} disabled={busy}>
+                    Resolve conflicts <RefreshCw size={13} />
+                  </button>
+                </div>
+
+                {dashboard.upcoming_events && dashboard.upcoming_events.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px 0' }}>
+                    {dashboard.upcoming_events.map((evt) => (
+                      <div
+                        key={evt.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '10px 14px',
+                          background: 'var(--panel)',
+                          border: '1px solid var(--line)',
+                          borderRadius: '8px',
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontWeight: 600 }}>{evt.title}</div>
+                          <div style={{ fontSize: '12px', color: 'var(--muted)' }}>
+                            {formatTime(evt.start_time)} – {formatTime(evt.end_time)} ({evt.created_by})
+                          </div>
+                        </div>
+                        <button
+                          className="icon-button small"
+                          onClick={() => void handleDeleteCalendarEvent(evt.id)}
+                          title="Delete event (requires approval)"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="schedule-empty">
+                    <div className="schedule-art">
+                      <span className="schedule-leaf"><Leaf size={25} /></span>
+                    </div>
+                    <h3>No scheduled commitments yet</h3>
+                    <p>Sync your Google Calendar or let Leaves extract and schedule your tasks.</p>
+                    <button className="text-button" onClick={() => void handleSyncCalendar()}>
+                      Sync calendar <ArrowUpRight size={15} />
+                    </button>
+                  </div>
+                )}
+                <div className="day-footer">
+                  <span><Clock3 size={14} /> Local urgency-aware planner</span>
+                  <span className="planned-badge">ACTIVE</span>
+                </div>
+              </section>
+
+              {/* Tasks / Urgency Panel */}
+              <section className="panel sources-panel">
+                <div className="panel-heading">
+                  <div><div className="eyebrow muted-eyebrow">PRIORITY TASKS</div><h2>Explainable Urgency</h2></div>
+                  <button className="text-button" onClick={() => void handleExtractTasks()} disabled={busy}>
+                    Extract tasks <ArrowUpRight size={14} />
+                  </button>
+                </div>
+                <div className="stat-pair">
+                  <div className="stat-card">
+                    <span>Pending tasks</span>
+                    <strong>{dashboard.pending_task_count.toString().padStart(2, '0')}</strong>
+                    <small>ranked by urgency</small>
+                  </div>
+                  <div className="stat-card">
+                    <span>Calendar events</span>
+                    <strong>{dashboard.calendar_count.toString().padStart(2, '0')}</strong>
+                    <small>in local store</small>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px' }}>
+                  {dashboard.high_priority_tasks && dashboard.high_priority_tasks.length > 0 ? (
+                    dashboard.high_priority_tasks.map((t) => (
+                      <div
+                        key={t.id}
+                        style={{
+                          padding: '10px 12px',
+                          background: 'var(--sidebar)',
+                          borderRadius: '8px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                        }}
+                      >
+                        <div style={{ maxWidth: '75%' }}>
+                          <div style={{ fontWeight: 600, fontSize: '13px' }}>{t.title}</div>
+                          <div style={{ fontSize: '11px', color: 'var(--muted)' }}>
+                            Urgency {t.urgency_score}/10: {t.urgency_reason}
+                          </div>
+                        </div>
+                        <button
+                          className="text-button"
+                          style={{ fontSize: '12px', padding: '4px 8px' }}
+                          onClick={() => void handleScheduleTask(t.id)}
+                          disabled={busy}
+                        >
+                          Schedule
+                        </button>
+                      </div>
+                    ))
+                  ) : (
+                    <div style={{ fontSize: '13px', color: 'var(--muted)', padding: '12px 0' }}>
+                      No tasks extracted yet. Click "Extract tasks" above!
+                    </div>
+                  )}
+                </div>
+                <button className="panel-link" onClick={() => setPage('tasks')}>
+                  View all tasks & urgency <ChevronRight size={15} />
+                </button>
+              </section>
+            </div>
+          </div>
+        )}
+
+        {/* TASKS PAGE */}
+        {page === 'tasks' && (
+          <div className="page-content">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <div>
+                <h2>Extracted Tasks & Urgency Ranking</h2>
+                <p style={{ color: 'var(--muted)', fontSize: '14px', margin: '4px 0 0' }}>
+                  Extracted from permitted Markdown notes and task-relevant emails. Urgency is explainable.
+                </p>
+              </div>
+              <button
+                className="text-button"
+                style={{ padding: '8px 16px', background: 'var(--accent)', color: '#fff', borderRadius: '6px' }}
+                onClick={() => void handleExtractTasks()}
+                disabled={busy}
+              >
+                {busy ? <LoaderCircle size={15} className="spinner" /> : <RefreshCw size={15} />} Extract & Re-score
+              </button>
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+              {(['all', 'pending', 'scheduled', 'completed'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  className={`nav-item ${taskFilter === tab ? 'active' : ''}`}
+                  style={{ width: 'auto', padding: '6px 12px', borderRadius: '6px' }}
+                  onClick={() => setTaskFilter(tab)}
+                >
+                  {tab.toUpperCase()}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {tasks
+                .filter((t) => taskFilter === 'all' || t.status === taskFilter)
+                .map((t) => (
+                  <div
+                    key={t.id}
+                    style={{
+                      padding: '16px',
+                      background: 'var(--panel)',
+                      border: '1px solid var(--line)',
+                      borderRadius: '8px',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span
+                          style={{
+                            fontSize: '11px',
+                            fontWeight: 700,
+                            padding: '2px 8px',
+                            borderRadius: '12px',
+                            background: t.urgency_score >= 8 ? 'var(--accent-soft)' : 'var(--green-soft)',
+                            color: t.urgency_score >= 8 ? 'var(--accent)' : 'var(--green)',
+                          }}
+                        >
+                          Urgency {t.urgency_score}/10
+                        </span>
+                        <span style={{ fontSize: '11px', color: 'var(--muted)', textTransform: 'uppercase' }}>
+                          {t.source_type} ({t.status})
+                        </span>
+                        {t.deadline && (
+                          <span style={{ fontSize: '11px', color: 'var(--muted)' }}>
+                            Due: {formatTime(t.deadline)}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontWeight: 600, fontSize: '15px', marginTop: '6px' }}>{t.title}</div>
+                      <div style={{ fontSize: '13px', color: 'var(--muted)', marginTop: '2px' }}>
+                        {t.urgency_reason} • Estimated {t.suggested_duration_minutes} min
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      {t.status === 'pending' && (
+                        <button
+                          className="text-button"
+                          style={{ padding: '6px 12px', background: 'var(--green)', color: '#fff', borderRadius: '4px' }}
+                          onClick={() => void handleScheduleTask(t.id)}
+                          disabled={busy}
+                        >
+                          Schedule
+                        </button>
+                      )}
+                      <button
+                        className="text-button"
+                        style={{ padding: '6px 10px', fontSize: '12px' }}
+                        onClick={() => void api.updateTaskStatus(t.id, 'completed').then(() => loadTasks())}
+                      >
+                        <Check size={14} /> Done
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              {tasks.length === 0 && (
+                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--muted)' }}>
+                  No tasks extracted yet. Click "Extract & Re-score" to analyze your connected notes and emails.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* CALENDAR PAGE */}
+        {page === 'calendar' && (
+          <div className="page-content">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <div>
+                <h2>Google Calendar & Local Commitments</h2>
+                <p style={{ color: 'var(--muted)', fontSize: '14px', margin: '4px 0 0' }}>
+                  Leaves arranges tasks around your commitments and availability. Deleting events always requires user approval.
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button className="text-button" onClick={() => void handleSyncCalendar()} disabled={busy}>
+                  Sync calendar <RefreshCw size={13} />
+                </button>
+                <button className="text-button" onClick={() => void handleResolveConflicts()} disabled={busy}>
+                  Resolve conflicts
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {calendarEvents.map((evt) => (
+                <div
+                  key={evt.id}
+                  style={{
+                    padding: '14px 16px',
+                    background: 'var(--panel)',
+                    border: '1px solid var(--line)',
+                    borderRadius: '8px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                  }}
+                >
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: '15px' }}>{evt.title}</div>
+                    <div style={{ fontSize: '13px', color: 'var(--muted)', marginTop: '2px' }}>
+                      {formatTime(evt.start_time)} – {formatTime(evt.end_time)} • Created by {evt.created_by}
+                    </div>
+                    {evt.description && (
+                      <div style={{ fontSize: '12px', color: 'var(--subtle)', marginTop: '4px' }}>
+                        {evt.description}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    className="icon-button"
+                    onClick={() => void handleDeleteCalendarEvent(evt.id)}
+                    title="Delete event (requires approval)"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              ))}
+              {calendarEvents.length === 0 && (
+                <div style={{ textAlign: 'center', padding: '40px', color: 'var(--muted)' }}>
+                  No calendar commitments found. Click "Sync calendar" to load events.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* SEARCH PAGE */}
+        {page === 'search' && (
+          <div className="page-content">
+            <h2>Full-Text Search</h2>
+            <form onSubmit={runSearch} style={{ display: 'flex', gap: '8px', margin: '16px 0 24px' }}>
+              <input
+                style={{ flex: 1, padding: '10px 14px', borderRadius: '6px', border: '1px solid var(--line)', background: 'var(--panel)' }}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search notes, documents, and context..."
+              />
+              <button className="text-button" type="submit" disabled={searching}>
+                {searching ? 'Searching...' : 'Search'}
+              </button>
+            </form>
+            {searchError && <div style={{ color: 'var(--accent)', marginBottom: '12px' }}>{searchError}</div>}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              {searchResults.map((r) => (
+                <div key={r.id} style={{ padding: '14px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px' }}>
+                  <div style={{ fontWeight: 600 }}>{r.title}</div>
+                  <div style={{ fontSize: '12px', color: 'var(--muted)', margin: '4px 0' }}>{r.path}</div>
+                  <div style={{ fontSize: '13px', color: 'var(--ink)' }}>{r.excerpt}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* SOURCES PAGE */}
+        {page === 'sources' && (
+          <div className="page-content">
+            <h2>Connected Context Sources</h2>
+            <p style={{ color: 'var(--muted)', fontSize: '14px', margin: '4px 0 20px' }}>
+              Manage local Markdown folders, Gmail, and Google Calendar. Original source files and accounts are never modified.
+            </p>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '24px' }}>
+              {/* Folder Picker Card */}
+              <div style={{ padding: '16px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px' }}>
+                <h3>Local Markdown Folders</h3>
+                <p style={{ fontSize: '13px', color: 'var(--muted)' }}>Select local folders containing notes to index.</p>
+                <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                  <button className="text-button" onClick={() => void selectFolder()} disabled={busy}>
+                    Choose Folder <FolderPlus size={14} />
+                  </button>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '13px' }}>
+                    <input type="checkbox" checked={recursive} onChange={(e) => setRecursive(e.target.checked)} />
+                    Recursive
+                  </label>
+                </div>
+              </div>
+
+              {/* Gmail Sync Card */}
+              <div style={{ padding: '16px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px' }}>
+                <h3>Gmail Integration</h3>
+                <p style={{ fontSize: '13px', color: 'var(--muted)' }}>
+                  Scans all mail by default. Only emails relevant to tasks are sent to LLMs.
+                </p>
+                <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                  <button className="text-button" onClick={() => void handleSyncGmail()} disabled={busy}>
+                    Sync Gmail <RefreshCw size={14} />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <h3>Indexed Folders ({dashboard.sources.length})</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
+              {dashboard.sources.map((s) => (
+                <div
+                  key={s.id}
+                  style={{
+                    padding: '12px',
+                    background: 'var(--panel)',
+                    border: '1px solid var(--line)',
+                    borderRadius: '8px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                  }}
+                >
+                  <div>
+                    <div style={{ fontWeight: 600 }}>{s.path}</div>
+                    <div style={{ fontSize: '12px', color: 'var(--muted)' }}>
+                      Recursive: {s.recursive ? 'Yes' : 'No'} • Last indexed: {s.last_indexed_at ? relativeDate(s.last_indexed_at) : 'Never'}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button className="icon-button" onClick={() => void refreshSource(s.id)} title="Refresh">
+                      <RefreshCw size={15} />
+                    </button>
+                    <button className="icon-button" onClick={() => void removeSource(s.id)} title="Remove index">
+                      <X size={15} />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* SETTINGS PAGE */}
+        {page === 'settings' && (
+          <div className="page-content">
+            <h2>Settings & Model Configuration</h2>
+            <p style={{ color: 'var(--muted)', fontSize: '14px', margin: '4px 0 20px' }}>
+              One active model provider at a time. Credentials stored securely outside project files and database.
+            </p>
+
+            {/* Model Provider Section */}
+            <div style={{ padding: '18px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px', marginBottom: '20px' }}>
+              <h3>Active LLM Provider</h3>
+              <p style={{ fontSize: '13px', color: 'var(--muted)' }}>
+                Leaves sends only task-relevant excerpts to your active provider.
+              </p>
+              <div style={{ display: 'flex', gap: '10px', margin: '14px 0' }}>
+                {['heuristic', 'openai', 'anthropic', 'gemini'].map((p) => (
+                  <button
+                    key={p}
+                    className={`nav-item ${modelSettings?.active_provider === p ? 'active' : ''}`}
+                    style={{ width: 'auto', padding: '8px 14px', borderRadius: '6px' }}
+                    onClick={() => void handleSaveModelConfig(p)}
+                    disabled={busy}
+                  >
+                    {p.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+
+              {modelSettings && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '16px' }}>
+                  {(['openai', 'anthropic', 'gemini'] as const).map((prov) => (
+                    <div key={prov} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span style={{ width: '100px', fontWeight: 600, textTransform: 'capitalize' }}>{prov} Key:</span>
+                      <input
+                        type="password"
+                        placeholder={modelSettings.providers[prov]?.masked_key || 'Enter API Key'}
+                        value={apiKeyInputs[prov] || ''}
+                        onChange={(e) => setApiKeyInputs({ ...apiKeyInputs, [prov]: e.target.value })}
+                        style={{ flex: 1, padding: '8px', borderRadius: '4px', border: '1px solid var(--line)', background: 'var(--sidebar)' }}
+                      />
+                      <button
+                        className="text-button"
+                        onClick={() => void handleSaveModelConfig(prov)}
+                        disabled={!apiKeyInputs[prov]}
+                      >
+                        Save Key
+                      </button>
+                      {modelSettings.providers[prov]?.configured && (
+                        <button
+                          className="icon-button"
+                          onClick={() => void api.deleteModelKey(prov).then(() => loadSettings())}
+                          title="Delete Key"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Availability Settings */}
+            <div style={{ padding: '18px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px', marginBottom: '20px' }}>
+              <h3>Availability & Working Hours</h3>
+              <p style={{ fontSize: '13px', color: 'var(--muted)' }}>
+                Configure daily working hours, break windows, and task duration defaults.
+              </p>
+              {availability && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginTop: '14px' }}>
+                  <div>
+                    <label style={{ fontSize: '12px', color: 'var(--muted)' }}>Work Hours Start</label>
+                    <input
+                      style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid var(--line)' }}
+                      value={availability.working_hours_start}
+                      onChange={(e) => setAvailability({ ...availability, working_hours_start: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '12px', color: 'var(--muted)' }}>Work Hours End</label>
+                    <input
+                      style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid var(--line)' }}
+                      value={availability.working_hours_end}
+                      onChange={(e) => setAvailability({ ...availability, working_hours_end: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '12px', color: 'var(--muted)' }}>Break Start</label>
+                    <input
+                      style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid var(--line)' }}
+                      value={availability.break_start}
+                      onChange={(e) => setAvailability({ ...availability, break_start: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '12px', color: 'var(--muted)' }}>Break End</label>
+                    <input
+                      style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid var(--line)' }}
+                      value={availability.break_end}
+                      onChange={(e) => setAvailability({ ...availability, break_end: e.target.value })}
+                    />
+                  </div>
+                  <div style={{ gridColumn: 'span 2' }}>
+                    <button
+                      className="text-button"
+                      onClick={() => void api.updateAvailability(availability).then(() => setActionMessage('Availability updated'))}
+                    >
+                      Save Availability Settings
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Data Export & Backup */}
+            <div style={{ padding: '18px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px', marginBottom: '20px' }}>
+              <h3>Data Export</h3>
+              <p style={{ fontSize: '13px', color: 'var(--muted)' }}>
+                Export all Leaves-held local data (notes index, emails, calendar events, tasks, notifications) as JSON.
+              </p>
+              <button className="text-button" onClick={() => void handleExport()} style={{ marginTop: '10px' }}>
+                <Download size={14} /> Export All Leaves Data (JSON)
+              </button>
+            </div>
+
+            {/* Schedule Notifications Log */}
+            <div style={{ padding: '18px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px' }}>
+              <h3>Schedule Notifications ({notifications.length})</h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '10px' }}>
+                {notifications.map((n) => (
+                  <div key={n.id} style={{ padding: '10px', background: 'var(--sidebar)', borderRadius: '6px', fontSize: '13px' }}>
+                    <strong>{n.title}:</strong> {n.message}
+                    <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>{relativeDate(n.created_at)}</div>
+                  </div>
+                ))}
+                {notifications.length === 0 && <div style={{ color: 'var(--muted)', fontSize: '13px' }}>No notifications yet.</div>}
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   )
 }
-
-function pageTitle(page: Page) {
-  return page === 'overview' ? 'Overview' : page === 'search' ? 'Search' : 'Sources'
-}
-
-function Overview({
-  dashboard, loading, dateText, onSearch, onNavigate, onAddFolder, onOpenRecent,
-}: {
-  dashboard: Dashboard
-  loading: boolean
-  dateText: string
-  onSearch: (value: string) => void
-  onNavigate: (page: Page) => void
-  onAddFolder: () => void
-  onOpenRecent: (item: Dashboard['recent_documents'][number]) => void
-}) {
-  return (
-    <div className="page-content overview-page">
-      <div className="welcome-row">
-        <div>
-          <div className="eyebrow"><span className="eyebrow-line" />{dateText}</div>
-          <h1>{timeGreeting()}<span className="title-comma">,</span> take a breath.</h1>
-          <p className="welcome-subtitle">A little more context for the things that matter.</p>
-        </div>
-        <div className="sun-stamp" aria-hidden="true"><span>葉</span><i /></div>
-      </div>
-
-      <form className="hero-search" id="dashboard-search" onSubmit={(event) => { event.preventDefault(); onSearch(new FormData(event.currentTarget).get('q')?.toString() ?? '') }}>
-        <Search size={20} />
-        <input id="main-search-input" name="q" placeholder="Search your notes, moments, and plans…" aria-label="Search your Leaves context" />
-        <kbd>⌘ K</kbd>
-        <button className="search-arrow" aria-label="Search"><ArrowUpRight size={19} /></button>
-      </form>
-
-      <div className="overview-grid">
-        <section className="panel day-panel">
-          <div className="panel-heading">
-            <div><div className="eyebrow muted-eyebrow">YOUR DAY</div><h2>Today, in context</h2></div>
-            <span className="date-chip"><CalendarDays size={14} />{new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date())}</span>
-          </div>
-          <div className="schedule-empty">
-            <div className="schedule-art"><div className="orbit orbit-one" /><div className="orbit orbit-two" /><span className="schedule-leaf"><Leaf size={25} /></span><span className="spark spark-a">✳</span><span className="spark spark-b">·</span></div>
-            <h3>Your day will take shape here</h3>
-            <p>Connect your calendar and Leaves will bring your schedule and useful context together.</p>
-            <button className="text-button" onClick={() => onNavigate('sources')}>Explore integrations <ArrowUpRight size={15} /></button>
-          </div>
-          <div className="day-footer"><span><Clock3 size={14} /> Background schedule planning</span><span className="planned-badge">IN DEVELOPMENT</span></div>
-        </section>
-
-        <section className="panel sources-panel">
-          <div className="panel-heading">
-            <div><div className="eyebrow muted-eyebrow">YOUR CONTEXT</div><h2>Sources</h2></div>
-            <button className="icon-button" onClick={() => onNavigate('sources')} aria-label="Manage sources"><ArrowUpRight size={17} /></button>
-          </div>
-          <div className="stat-pair">
-            <div className="stat-card"><span>Folders</span><strong>{loading ? '—' : dashboard.source_count.toString().padStart(2, '0')}</strong><small>on this device</small></div>
-            <div className="stat-card"><span>Notes indexed</span><strong>{loading ? '—' : dashboard.document_count.toString().padStart(2, '0')}</strong><small>Markdown files</small></div>
-          </div>
-          <div className="integration-list">
-            <IntegrationRow kind="markdown" title="Markdown" subtitle={dashboard.source_count ? `${dashboard.source_count} folder${dashboard.source_count === 1 ? '' : 's'} connected` : 'On-device notes'} state={dashboard.source_count ? 'connected' : 'ready'} />
-            <IntegrationRow kind="gmail" title="Gmail" subtitle="Email and follow-ups" state="planned" />
-            <IntegrationRow kind="calendar" title="Google Calendar" subtitle="Events and time blocks" state="planned" />
-          </div>
-          <button className="panel-link" onClick={() => onNavigate('sources')}>Manage sources <ChevronRight size={15} /></button>
-        </section>
-      </div>
-
-      <section className="recent-section">
-        <div className="section-title-row"><div><div className="eyebrow muted-eyebrow">A QUIET PULSE</div><h2>Recently in your world</h2></div><button className="text-button" onClick={() => onNavigate('search')}>Search everything <ArrowUpRight size={15} /></button></div>
-        {dashboard.recent_documents.length ? <div className="recent-list">
-          {dashboard.recent_documents.map((item) => <button className="recent-item" key={item.path} onClick={() => onOpenRecent(item)}>
-            <span className="recent-file-icon"><FileText size={17} /></span>
-            <span className="recent-copy"><strong>{item.title}</strong><small>{item.path}</small></span>
-            <span className="recent-time">{relativeDate(item.modified_at)}</span><ChevronRight size={16} className="recent-chevron" />
-          </button>)}
-        </div> : <div className="recent-empty">
-          <span className="empty-leaf"><Leaf size={17} /></span>
-          <span><strong>{dashboard.source_count ? 'Nothing new since your last check-in.' : 'Your notes stay yours.'}</strong><small>{dashboard.source_count ? 'Indexed Markdown will show up here.' : 'Add a folder to let Leaves start building context, on this device.'}</small></span>
-          {!dashboard.source_count && <button className="small-outline-button" onClick={onAddFolder}><FolderPlus size={15} /> Add a folder</button>}
-        </div>}
-      </section>
-
-      <footer className="page-footer"><span><span className="local-pulse" /> Private by nature. Local by default.</span><span>Leaves <span className="footer-separator">·</span> Go touch some grass</span></footer>
-    </div>
-  )
-}
-
-function IntegrationRow({ kind, title, subtitle, state }: { kind: 'markdown' | 'gmail' | 'calendar'; title: string; subtitle: string; state: 'connected' | 'ready' | 'planned' }) {
-  return <div className="integration-row">
-    <span className={`integration-icon ${kind}`}>
-      {kind === 'markdown' ? <FileText size={15} /> : kind === 'gmail' ? <span className="gmail-m">M</span> : <CalendarDays size={15} />}
-    </span>
-    <span className="integration-copy"><strong>{title}</strong><small>{subtitle}</small></span>
-    {state === 'planned' ? <span className="planned-dot" title="Planned integration" /> : <span className={`connection-check ${state}`} title={state === 'connected' ? 'Connected' : 'Ready'}>{state === 'connected' && <Check size={11} />}</span>}
-  </div>
-}
-
-function SearchPage({ query, setQuery, runSearch, results, searching, error, hasSources, onAddFolder }: {
-  query: string
-  setQuery: (query: string) => void
-  runSearch: (event?: FormEvent) => void
-  results: SearchResult[]
-  searching: boolean
-  error: string
-  hasSources: boolean
-  onAddFolder: () => void
-}) {
-  return <div className="page-content search-page">
-    <div className="page-heading-block"><div className="eyebrow"><span className="eyebrow-line" />FIND YOUR THREAD</div><h1>Search your context<span className="title-comma">.</span></h1><p>Look across the things you have chosen to keep close.</p></div>
-    <form className="search-page-form" id="search-form" onSubmit={runSearch}>
-      <Search size={20} /><input id="main-search-input" autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Try a name, a project, or a phrase…" aria-label="Search indexed Markdown" />
-      {query && <button type="button" className="icon-button clear-search" onClick={() => { setQuery(''); }} aria-label="Clear search"><X size={16} /></button>}
-      <button className="solid-button" disabled={searching}>{searching ? <LoaderCircle size={16} className="spin" /> : 'Search'}</button>
-    </form>
-    <div className="search-meta"><span>{searching ? 'Searching your local index…' : query ? `${results.length} ${results.length === 1 ? 'result' : 'results'}` : 'Search runs on this device'}</span><span className="local-indicator"><span className="local-pulse" /> LOCAL INDEX</span></div>
-    {error && <div className="inline-error">{error}</div>}
-    {searching && <div className="loading-state"><LoaderCircle className="spin" size={22} /> Looking through your notes…</div>}
-    {!searching && query && !error && results.length > 0 && <div className="result-list">
-      {results.map((result) => <article className="result-card" key={result.id}>
-        <div className="result-topline"><span className="result-type"><FileText size={14} /> Markdown</span><span>{relativeDate(result.modified_at)}</span></div>
-        <h2>{result.title}</h2>
-        <p>{highlightSnippet(result.excerpt)}</p>
-        <div className="result-path"><span>{result.path}</span><ArrowUpRight size={14} /></div>
-      </article>)}
-    </div>}
-    {!searching && query && !error && results.length === 0 && <div className="search-empty"><div className="empty-orbit"><Search size={22} /></div><h2>No matches yet</h2><p>Try a shorter phrase, or check that your Markdown folder is connected.</p>{!hasSources && <button className="outline-button" onClick={onAddFolder}><FolderPlus size={16} /> Add a folder</button>}</div>}
-    {!query && <div className="search-start"><div className="search-start-icon"><Search size={17} /></div><div><strong>Your search stays private.</strong><p>Leaves searches only the Markdown you have indexed on this device.</p></div><span className="privacy-seal"><Leaf size={15} /> LOCAL ONLY</span></div>}
-  </div>
-}
-
-function SourcesPage({ sources, documentCount, recursive, setRecursive, folderPath, setFolderPath, busy, actionMessage, onChooseFolder, onAddFolder, onRefresh, onRemove }: {
-  sources: Source[]
-  documentCount: number
-  recursive: boolean
-  setRecursive: (recursive: boolean) => void
-  folderPath: string
-  setFolderPath: (path: string) => void
-  busy: boolean
-  actionMessage: string
-  onChooseFolder: () => void
-  onAddFolder: () => void
-  onRefresh: (source: Source) => void
-  onRemove: (source: Source) => void
-}) {
-  return <div className="page-content sources-page">
-    <div className="page-heading-block"><div className="eyebrow"><span className="eyebrow-line" />YOUR CHOSEN CONTEXT</div><h1>Sources<span className="title-comma">.</span></h1><p>Choose what Leaves can learn from. Your collected data stays on this device.</p></div>
-    <section className="source-manager panel">
-      <div className="manager-heading"><div className="integration-icon markdown"><FileText size={17} /></div><div><h2>Local Markdown</h2><p>Connect a folder of notes. Leaves indexes Markdown files and leaves originals untouched.</p></div><span className="live-label"><span className="local-pulse" /> ON DEVICE</span></div>
-      <div className="folder-action-row"><button className="solid-button" onClick={onChooseFolder} disabled={busy}><FolderPlus size={16} /> Choose a folder</button><span>Only the folder you select is added to Leaves.</span></div>
-      {!isTauri() && <form className="dev-folder-form" onSubmit={(event) => { event.preventDefault(); onAddFolder() }}>
-        <label htmlFor="folder-path-input">For browser preview, enter an absolute folder path</label>
-        <div><input id="folder-path-input" value={folderPath} onChange={(event) => setFolderPath(event.target.value)} placeholder="/Users/you/Documents/Notes" /><button className="small-outline-button" disabled={busy || !folderPath.trim()}>Add path</button></div>
-      </form>}
-      <label className="toggle-row"><span className="toggle-copy"><strong>Include subfolders</strong><small>Scan Markdown files inside nested folders too.</small></span><input type="checkbox" checked={recursive} onChange={(event) => setRecursive(event.target.checked)} /><span className="toggle-ui" /></label>
-      {actionMessage && <div className={`action-message ${actionMessage.toLowerCase().includes('could not') || actionMessage.toLowerCase().includes('failed') ? 'error' : ''}`}>{busy && <LoaderCircle size={15} className="spin" />}{actionMessage}</div>}
-    </section>
-
-    <div className="source-list-heading"><div><div className="eyebrow muted-eyebrow">CONNECTED TO LEAVES</div><h2>Your folders <span>{sources.length}</span></h2></div><div className="indexed-total">{documentCount} notes indexed</div></div>
-    {sources.length ? <div className="source-cards">{sources.map((source) => <article className="source-card panel" key={source.id}>
-      <div className="source-card-main"><div className="source-folder-icon"><FileText size={19} /></div><div className="source-card-copy"><h3>{source.path.split('/').filter(Boolean).at(-1) ?? source.path}</h3><p title={source.path}>{source.path}</p><div className="source-card-meta"><span><span className="local-pulse" /> {source.recursive ? 'Including subfolders' : 'Selected folder only'}</span><span>Last scanned {source.last_indexed_at ? relativeDate(source.last_indexed_at) : 'not yet'}</span></div></div></div>
-      <div className="source-card-actions"><button className="icon-button" onClick={() => onRefresh(source)} disabled={busy} aria-label="Refresh folder" title="Refresh folder"><RefreshCw size={15} /></button><button className="icon-button remove-source" onClick={() => onRemove(source)} disabled={busy} aria-label="Remove folder" title="Remove from Leaves"><X size={16} /></button></div>
-    </article>)}</div> : <div className="source-empty panel"><div className="empty-folder-art"><FolderPlus size={24} /></div><h3>No folders connected yet</h3><p>Choose a Markdown folder to begin. Leaves stores an indexed copy on this device; it never changes or deletes the original files.</p><button className="solid-button" onClick={onChooseFolder} disabled={busy}><FolderPlus size={16} /> Choose your first folder</button></div>}
-
-    <section className="planned-integrations"><div className="section-title-row"><div><div className="eyebrow muted-eyebrow">PRIORITIZED NEXT</div><h2>Planned integrations</h2></div><span className="planned-label">NOT CONNECTED</span></div>
-      <div className="planned-grid"><PlannedCard title="Gmail" desc="Find commitments and follow-ups in your inbox." icon="gmail" /><PlannedCard title="Google Calendar" desc="Arrange your day around events and available time." icon="calendar" /><PlannedCard title="More schedule apps" desc="Connect supported sources you choose." icon="apps" /></div>
-    </section>
-    <div className="data-control-note"><span className="privacy-seal"><Leaf size={15} /> YOUR DATA</span><span>Removing a folder deletes its indexed copy from Leaves. Your original files stay where they are.</span></div>
-  </div>
-}
-
-function PlannedCard({ title, desc, icon }: { title: string; desc: string; icon: 'gmail' | 'calendar' | 'apps' }) {
-  return <article className="planned-card"><div className={`integration-icon ${icon}`}>{icon === 'gmail' ? <span className="gmail-m">M</span> : icon === 'calendar' ? <CalendarDays size={16} /> : <Settings2 size={16} />}</div><div><strong>{title}</strong><p>{desc}</p></div><span className="planned-tag">NEXT</span></article>
-}
-
-function relativeDate(value: string) {
-  const date = new Date(value)
-  if (Number.isNaN(date.valueOf())) return 'recently'
-  const days = Math.floor((Date.now() - date.getTime()) / 86_400_000)
-  if (days <= 0) return 'today'
-  if (days === 1) return 'yesterday'
-  if (days < 7) return `${days} days ago`
-  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(date)
-}
-
-function highlightSnippet(value: string) {
-  const pieces = value.split(/(\u0001.*?\u0002)/g)
-  return pieces.map((piece, index) => {
-    if (piece.startsWith('\u0001') && piece.endsWith('\u0002')) {
-      return <mark key={index}>{piece.slice(1, -1)}</mark>
-    }
-    return piece
-  })
-}
-
 export default App
