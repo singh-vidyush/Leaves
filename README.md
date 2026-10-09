@@ -13,7 +13,7 @@ Leaves is a free, local-first desktop assistant that turns scattered information
 <br />
 
 [![Platform](https://img.shields.io/badge/Platform-macOS-000000?style=flat-square&logo=apple&logoColor=white)](https://github.com/singh-vidyush/Leaves/releases/latest)
-[![License](https://img.shields.io/badge/License-Open%20Source-2ea44f?style=flat-square)](contribution.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-2ea44f?style=flat-square)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/singh-vidyush/Leaves?style=flat-square&label=Release)](https://github.com/singh-vidyush/Leaves/releases/latest)
 [![GitHub Stars](https://img.shields.io/github/stars/singh-vidyush/Leaves?style=flat-square)](https://github.com/singh-vidyush/Leaves/stargazers)
 
