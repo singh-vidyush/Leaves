@@ -7,10 +7,13 @@ credentials use the operating system's secure credential store.
 
 ## Distribution status
 
-Leaves publishes a macOS installer when a `v*` version tag is pushed. Download
+Leaves publishes a macOS installer when a `v*` version tag is pushed. There is
+not a released installer yet. After the first successful tagged build, download
 the latest installer here:
 
 [Download Leaves for macOS](https://github.com/singh-vidyush/Leaves/releases/latest/download/Leaves-macos.dmg)
+
+[View Leaves releases](https://github.com/singh-vidyush/Leaves/releases)
 
 The release workflow runs the backend tests, builds the app and disk image on a
 macOS runner, verifies the bundled Python sidecar, and smoke tests the packaged
