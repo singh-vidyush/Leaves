@@ -103,6 +103,11 @@ export type TimeAwayBlock = {
 }
 
 export type GoogleConnectionStatus = { gmail: boolean; calendar: boolean }
+export type GoogleOAuthSettings = {
+  client_id_configured: boolean
+  client_secret_configured: boolean
+  ready: boolean
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${await getApiRoot()}${path}`, {
@@ -143,6 +148,11 @@ export const api = {
     request<{ deleted: boolean }>(`/settings/time-away/${id}`, { method: 'DELETE' }),
 
   googleConnectionStatus: () => request<GoogleConnectionStatus>('/auth/google/status'),
+  googleOAuthSettings: () => request<GoogleOAuthSettings>('/settings/google-oauth'),
+  saveGoogleOAuthSettings: (payload: { client_id?: string; client_secret?: string }) =>
+    request<GoogleOAuthSettings>('/settings/google-oauth', { method: 'PUT', body: JSON.stringify(payload) }),
+  removeGoogleOAuthSettings: () =>
+    request<GoogleOAuthSettings>('/settings/google-oauth', { method: 'DELETE' }),
   startGoogleConnection: (service: 'gmail' | 'calendar') =>
     request<{ authorization_url: string; state: string; service: string }>(`/auth/google/${service}/start`, { method: 'POST' }),
   disconnectGoogle: (service: 'gmail' | 'calendar') =>

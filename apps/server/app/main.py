@@ -4,7 +4,7 @@ from typing import Any, Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 
 from app.adapters.manager import (
     get_model_settings,
@@ -24,6 +24,9 @@ from app.integrations.google_oauth import (
     complete_google_oauth,
     disconnect_google_service,
     google_connection_status,
+    get_google_oauth_settings,
+    remove_google_oauth_settings,
+    save_google_oauth_settings,
 )
 from app.integrations.google_calendar.service import calendar_is_connected, get_event as get_calendar_event
 from app.services.export import export_leaves_data
@@ -70,6 +73,11 @@ class ModelSettingsInput(BaseModel):
     active_provider: Optional[str] = None
     provider: Optional[str] = None
     api_key: Optional[str] = None
+
+
+class GoogleOAuthSettingsInput(BaseModel):
+    client_id: Optional[str] = Field(default=None, max_length=300)
+    client_secret: Optional[SecretStr] = None
 
 
 class AvailabilityInput(BaseModel):
@@ -283,6 +291,32 @@ def delete_time_away_block(block_id: int) -> dict:
 
 # --- Gmail Integration ---
 
+@app.get("/api/settings/google-oauth")
+def google_oauth_settings_endpoint() -> dict[str, bool]:
+    try:
+        return get_google_oauth_settings()
+    except CredentialStoreUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.put("/api/settings/google-oauth")
+def save_google_oauth_settings_endpoint(payload: GoogleOAuthSettingsInput) -> dict[str, bool]:
+    try:
+        secret = payload.client_secret.get_secret_value() if payload.client_secret else None
+        return save_google_oauth_settings(payload.client_id, secret)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except CredentialStoreUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.delete("/api/settings/google-oauth")
+def remove_google_oauth_settings_endpoint() -> dict[str, bool]:
+    try:
+        return remove_google_oauth_settings()
+    except CredentialStoreUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
 @app.post("/api/automation/gmail/poll")
 def poll_gmail_automation_endpoint() -> dict:
     try:
@@ -317,6 +351,8 @@ def google_oauth_start_endpoint(service: str) -> dict[str, str]:
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except GoogleOAuthError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except CredentialStoreUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
 

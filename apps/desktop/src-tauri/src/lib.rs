@@ -1,5 +1,7 @@
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem},
@@ -54,12 +56,30 @@ pub fn run() {
                 let port = TcpListener::bind(("127.0.0.1", 0))?.local_addr()?.port();
                 let data_dir = app.path().app_data_dir()?;
                 std::fs::create_dir_all(&data_dir)?;
-                let (mut events, child) = app
+                let (mut events, mut child) = app
                     .shell()
                     .sidecar("leaves-api")?
                     .env("LEAVES_DATA_DIR", data_dir)
                     .env("LEAVES_API_PORT", port.to_string())
+                    .env("LEAVES_PARENT_PID", std::process::id().to_string())
                     .spawn()?;
+                let deadline = Instant::now() + Duration::from_secs(20);
+                let mut backend_ready = false;
+                while Instant::now() < deadline {
+                    if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                        backend_ready = true;
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+                if !backend_ready {
+                    let _ = child.kill();
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "Leaves backend did not become ready within 20 seconds",
+                    )
+                    .into());
+                }
                 app.manage(BackendProcess {
                     child: Mutex::new(Some(child)),
                     port,

@@ -41,7 +41,9 @@ cd "$SERVER_DIR"
     --specpath "${TMPDIR:-/tmp}/leaves-pyinstaller-spec" \
     --hidden-import app.main \
     --collect-submodules app \
+    --collect-submodules keyring.backends \
     --collect-all keyring \
+    --copy-metadata keyring \
     launcher.py
 
 test -x "$BIN_DIR/leaves-api-$TARGET_TRIPLE"

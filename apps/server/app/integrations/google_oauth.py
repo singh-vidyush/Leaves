@@ -19,8 +19,8 @@ SCOPES = {
     "gmail": "https://www.googleapis.com/auth/gmail.readonly",
     "calendar": "https://www.googleapis.com/auth/calendar.events.owned",
 }
-GOOGLE_CLIENT_ID_ENV = "GOOGLE_OAUTH_CLIENT_ID"
-GOOGLE_CLIENT_SECRET_ENV = "GOOGLE_OAUTH_CLIENT_SECRET"
+GOOGLE_CLIENT_ID_CREDENTIAL = "google_oauth_client_id"
+GOOGLE_CLIENT_SECRET_CREDENTIAL = "google_oauth_client_secret"
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
@@ -45,27 +45,64 @@ _transactions_lock = threading.Lock()
 
 
 def _client_id() -> str:
-    client_id = os.environ.get(GOOGLE_CLIENT_ID_ENV, "").strip()
+    client_id = (get_credential(GOOGLE_CLIENT_ID_CREDENTIAL) or "").strip()
     if not client_id:
         raise GoogleOAuthError(
-            f"Set {GOOGLE_CLIENT_ID_ENV} to a Google OAuth desktop client ID before connecting an account."
+            "Enter a Google OAuth Client ID in Leaves Settings before connecting a Google account."
         )
     return client_id
 
 
 def _client_secret() -> str:
-    client_secret = os.environ.get(GOOGLE_CLIENT_SECRET_ENV, "").strip()
+    client_secret = (get_credential(GOOGLE_CLIENT_SECRET_CREDENTIAL) or "").strip()
     if not client_secret:
         raise GoogleOAuthError(
-            f"Set {GOOGLE_CLIENT_SECRET_ENV} in your local .env file before connecting a Google account."
+            "Enter a Google OAuth Client Secret in Leaves Settings before connecting a Google account."
         )
     return client_secret
+
+
+def get_google_oauth_settings() -> dict[str, bool]:
+    """Return credential presence only; never return saved OAuth values."""
+    client_id = get_credential(GOOGLE_CLIENT_ID_CREDENTIAL)
+    client_secret = get_credential(GOOGLE_CLIENT_SECRET_CREDENTIAL)
+    return {
+        "client_id_configured": bool(client_id),
+        "client_secret_configured": bool(client_secret),
+        "ready": bool(client_id and client_secret),
+    }
+
+
+def save_google_oauth_settings(client_id: str | None, client_secret: str | None) -> dict[str, bool]:
+    clean_client_id = (client_id or "").strip()
+    clean_client_secret = (client_secret or "").strip()
+    if not clean_client_id and not clean_client_secret:
+        raise ValueError("Enter a Client ID or Client Secret to save.")
+    if clean_client_id and not clean_client_id.endswith(".apps.googleusercontent.com"):
+        raise ValueError("Client ID must be from a Google OAuth Desktop client.")
+    if clean_client_secret and len(clean_client_secret) < 8:
+        raise ValueError("Client Secret must be at least 8 characters.")
+    if clean_client_id:
+        save_credential(GOOGLE_CLIENT_ID_CREDENTIAL, clean_client_id)
+    if clean_client_secret:
+        save_credential(GOOGLE_CLIENT_SECRET_CREDENTIAL, clean_client_secret)
+    return get_google_oauth_settings()
+
+
+def remove_google_oauth_settings() -> dict[str, bool]:
+    """Remove the OAuth client and connected tokens from the OS credential store."""
+    for service in SCOPES:
+        disconnect_google_service(service)
+    delete_credential(GOOGLE_CLIENT_ID_CREDENTIAL)
+    delete_credential(GOOGLE_CLIENT_SECRET_CREDENTIAL)
+    return get_google_oauth_settings()
 
 
 def begin_google_oauth(service: str) -> dict[str, str]:
     if service not in SCOPES:
         raise ValueError("Google service must be 'gmail' or 'calendar'.")
     client_id = _client_id()
+    _client_secret()
     port = int(os.environ.get("LEAVES_API_PORT", "8000"))
     redirect_uri = f"http://127.0.0.1:{port}/api/auth/google/callback"
     verifier = secrets.token_urlsafe(64)

@@ -6,25 +6,6 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 SERVER_DIR="$ROOT_DIR/apps/server"
 DESKTOP_DIR="$ROOT_DIR/apps/desktop"
 
-# Keep local OAuth configuration out of source control. Explicit environment
-# variables take precedence over values in the root .env file.
-LEAVES_GOOGLE_CLIENT_ID_FROM_ENV=${GOOGLE_OAUTH_CLIENT_ID:-}
-LEAVES_GOOGLE_CLIENT_SECRET_FROM_ENV=${GOOGLE_OAUTH_CLIENT_SECRET:-}
-if [ -f "$ROOT_DIR/.env" ]; then
-  set -a
-  . "$ROOT_DIR/.env"
-  set +a
-fi
-if [ -n "$LEAVES_GOOGLE_CLIENT_ID_FROM_ENV" ]; then
-  GOOGLE_OAUTH_CLIENT_ID=$LEAVES_GOOGLE_CLIENT_ID_FROM_ENV
-  export GOOGLE_OAUTH_CLIENT_ID
-fi
-if [ -n "$LEAVES_GOOGLE_CLIENT_SECRET_FROM_ENV" ]; then
-  GOOGLE_OAUTH_CLIENT_SECRET=$LEAVES_GOOGLE_CLIENT_SECRET_FROM_ENV
-  export GOOGLE_OAUTH_CLIENT_SECRET
-fi
-unset LEAVES_GOOGLE_CLIENT_ID_FROM_ENV LEAVES_GOOGLE_CLIENT_SECRET_FROM_ENV
-
 if [ -x "$SERVER_DIR/.venv/bin/python" ]; then
   PYTHON_BIN="$SERVER_DIR/.venv/bin/python"
 else

@@ -7,9 +7,8 @@ credentials use the operating system's secure credential store.
 
 ## Distribution status
 
-This repository contains source code only. It does not currently publish a
-prebuilt installer or app download. You can build and run Leaves locally by
-following the steps below.
+Leaves can be packaged locally as a macOS `.app` and `.dmg`. The repository
+does not publish GitHub Releases or installers automatically.
 
 ## Requirements
 
@@ -40,27 +39,32 @@ cd ../..
 ```
 
 The development script starts the local API and launches the Tauri desktop app.
-The first run builds the Python backend sidecar for the current operating
-system and architecture. The backend listens only on the local machine.
+Connect Google and save OAuth Client ID and Client Secret in Leaves Settings;
+no `.env` file is needed. OAuth values and tokens are stored in the operating
+system credential store. The backend listens only on the local machine.
 
-## Build a local app
+## Build the macOS app and installer
 
-After installing the dependencies above, build the desktop app on the same
-operating system and architecture where it will run:
+On a Mac with Python 3.11+, Node.js, pnpm, Rust, and Xcode Command Line Tools,
+run one command from the repository root:
 
 ```sh
-cd apps/desktop
-pnpm tauri build
+./scripts/build_macos.sh
 ```
 
-The generated installer is local to your machine; this repository does not
-upload or publish it. PyInstaller does not cross-compile the backend sidecar.
+This creates `Leaves.app` and a `.dmg` under
+`apps/desktop/src-tauri/target/release/bundle/`. The Python backend is bundled
+as a Tauri sidecar and starts automatically. User data is stored persistently
+in the macOS application data directory. Build on the Mac architecture you
+intend to use; PyInstaller does not cross-compile the sidecar.
+The build is local and unsigned unless a signing identity is configured. Sharing
+the app without Gatekeeper warnings requires Apple Developer ID signing and
+notarization.
 
 ## Google integrations
 
-To connect Gmail and Google Calendar in development, copy `.env.example` to
-`.env` and set both `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`
-from the same Google OAuth Desktop client. The development script loads this
-local file; `.env` is ignored by Git. Never commit or share the populated `.env`
-file, client secret, or OAuth tokens. The app uses PKCE, requests read-only
-Gmail access, and requests access to events owned by the user.
+Enter the Client ID and Client Secret from the same Google OAuth Desktop client
+in Leaves Settings. Leaves stores them and OAuth tokens in the operating
+system's secure credential store, not in SQLite, browser storage, or Git. The
+app uses PKCE, requests read-only Gmail access, and requests access to events
+owned by the user.

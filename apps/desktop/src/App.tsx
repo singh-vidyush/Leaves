@@ -28,6 +28,7 @@ import {
   type AvailabilitySettings,
   type CalendarEventItem,
   type Dashboard,
+  type GoogleOAuthSettings,
   type ModelSettings,
   type NotificationItem,
   type SearchResult,
@@ -121,6 +122,8 @@ export function App() {
 
   // Settings state
   const [modelSettings, setModelSettings] = useState<ModelSettings | null>(null)
+  const [googleOAuthSettings, setGoogleOAuthSettings] = useState<GoogleOAuthSettings | null>(null)
+  const [googleOAuthError, setGoogleOAuthError] = useState('')
   const [credentialError, setCredentialError] = useState('')
   const [googleConnections, setGoogleConnections] = useState({ gmail: false, calendar: false })
   const [availability, setAvailability] = useState<AvailabilitySettings | null>(null)
@@ -183,6 +186,13 @@ export function App() {
       setCredentialError('Model settings need an available operating-system credential store.')
     }
     try { setGoogleConnections(await api.googleConnectionStatus()) } catch { /* Secure storage may be unavailable. */ }
+    try {
+      setGoogleOAuthSettings(await api.googleOAuthSettings())
+      setGoogleOAuthError('')
+    } catch (error) {
+      setGoogleOAuthSettings(null)
+      setGoogleOAuthError(errorMessage(error, 'OAuth settings need an available operating-system credential store.'))
+    }
   }, [])
 
   useEffect(() => {
@@ -486,6 +496,51 @@ export function App() {
       await loadSettings()
     } catch (err) {
       setActionMessage(err instanceof Error ? err.message : 'Failed to update model settings')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleSaveGoogleOAuthSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = event.currentTarget
+    const values = new FormData(form)
+    const clientId = String(values.get('google-client-id') ?? '').trim()
+    const clientSecret = String(values.get('google-client-secret') ?? '').trim()
+    if (!clientId && !clientSecret) {
+      setGoogleOAuthError('Enter a Client ID or Client Secret to save.')
+      return
+    }
+
+    setBusy(true)
+    setGoogleOAuthError('')
+    try {
+      const settings = await api.saveGoogleOAuthSettings({
+        client_id: clientId || undefined,
+        client_secret: clientSecret || undefined,
+      })
+      setGoogleOAuthSettings(settings)
+      form.reset()
+      setActionMessage(settings.ready
+        ? 'Google OAuth credentials saved securely in Keychain.'
+        : 'Saved. Enter the remaining Google OAuth credential to connect an account.')
+    } catch (error) {
+      setGoogleOAuthError(errorMessage(error, 'Could not save Google OAuth credentials.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleRemoveGoogleOAuthSettings() {
+    if (!window.confirm('Remove the Google OAuth Client ID and Secret? This will also disconnect Gmail and Google Calendar.')) return
+    setBusy(true)
+    setGoogleOAuthError('')
+    try {
+      setGoogleOAuthSettings(await api.removeGoogleOAuthSettings())
+      setGoogleConnections(await api.googleConnectionStatus())
+      setActionMessage('Google OAuth credentials removed from Keychain.')
+    } catch (error) {
+      setGoogleOAuthError(errorMessage(error, 'Could not remove Google OAuth credentials.'))
     } finally {
       setBusy(false)
     }
@@ -1082,10 +1137,61 @@ export function App() {
         {/* SETTINGS PAGE */}
         {page === 'settings' && (
           <div className="page-content">
-            <h2>Settings & Model Configuration</h2>
+            <h2>Settings</h2>
             <p style={{ color: 'var(--muted)', fontSize: '14px', margin: '4px 0 20px' }}>
-              One active model provider at a time. Credentials stored securely outside project files and database.
+              OAuth and model credentials are stored securely in macOS Keychain, outside project files and the local database.
             </p>
+
+            <div style={{ padding: '18px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px', marginBottom: '20px' }}>
+              <h3>Google OAuth</h3>
+              <p style={{ fontSize: '13px', color: 'var(--muted)' }}>
+                Enter the Client ID and Client Secret from the same Google OAuth Desktop client. Values are saved to Keychain and never shown again.
+              </p>
+              <p role="status" style={{ fontSize: '13px', color: googleOAuthSettings?.ready ? 'var(--success, var(--ink))' : 'var(--muted)' }}>
+                {googleOAuthSettings?.ready
+                  ? 'OAuth credentials are ready.'
+                  : googleOAuthSettings
+                    ? `Needs ${googleOAuthSettings.client_id_configured ? 'Client Secret' : googleOAuthSettings.client_secret_configured ? 'Client ID' : 'Client ID and Client Secret'}.`
+                    : 'Checking secure credential storage…'}
+                {' '}Gmail: {googleConnections.gmail ? 'Connected' : 'Not connected'} · Calendar: {googleConnections.calendar ? 'Connected' : 'Not connected'}
+              </p>
+              {googleOAuthError && <p role="alert" style={{ fontSize: '13px', color: 'var(--accent)' }}>{googleOAuthError}</p>}
+              <form onSubmit={(event) => void handleSaveGoogleOAuthSettings(event)} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '10px', alignItems: 'end', marginTop: '14px' }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px', color: 'var(--muted)' }}>
+                  Google OAuth Client ID
+                  <input
+                    name="google-client-id"
+                    type="password"
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    placeholder={googleOAuthSettings?.client_id_configured ? 'Saved in Keychain — blank keeps current value' : 'Paste Client ID'}
+                    aria-label="Google OAuth Client ID"
+                    style={{ padding: '9px', borderRadius: '4px', border: '1px solid var(--line)', background: 'var(--sidebar)' }}
+                  />
+                </label>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px', color: 'var(--muted)' }}>
+                  Google OAuth Client Secret
+                  <input
+                    name="google-client-secret"
+                    type="password"
+                    autoComplete="new-password"
+                    placeholder={googleOAuthSettings?.client_secret_configured ? 'Saved in Keychain — blank keeps current value' : 'Paste Client Secret'}
+                    aria-label="Google OAuth Client Secret"
+                    style={{ padding: '9px', borderRadius: '4px', border: '1px solid var(--line)', background: 'var(--sidebar)' }}
+                  />
+                </label>
+                <button className="text-button" type="submit" disabled={busy}>Save Credentials</button>
+              </form>
+              <button
+                className="text-button"
+                style={{ marginTop: '10px' }}
+                onClick={() => void handleRemoveGoogleOAuthSettings()}
+                disabled={busy || !(googleOAuthSettings?.client_id_configured || googleOAuthSettings?.client_secret_configured)}
+              >
+                Remove Google Credentials
+              </button>
+            </div>
 
             {/* Model Provider Section */}
             <div style={{ padding: '18px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px', marginBottom: '20px' }}>
