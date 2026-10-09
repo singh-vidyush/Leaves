@@ -85,11 +85,25 @@ jobs:
           BUNDLE_DIR="apps/desktop/src-tauri/target/release/bundle"
           APP_PATH=$(find "$BUNDLE_DIR" -maxdepth 3 -type d -name 'Leaves.app' -print -quit)
           DMG_PATH=$(find "$BUNDLE_DIR" -maxdepth 3 -type f -name '*.dmg' -print -quit)
-          test -n "$APP_PATH" && test -d "$APP_PATH"
-          test -n "$DMG_PATH" && test -s "$DMG_PATH"
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+            echo "Leaves.app was not found under $BUNDLE_DIR" >&2
+            find "$BUNDLE_DIR" -maxdepth 4 -print >&2
+            exit 1
+          fi
+          if [ -z "$DMG_PATH" ] || [ ! -s "$DMG_PATH" ]; then
+            echo "A non-empty DMG was not found under $BUNDLE_DIR" >&2
+            find "$BUNDLE_DIR" -maxdepth 4 -print >&2
+            exit 1
+          fi
           plutil -lint "$APP_PATH/Contents/Info.plist"
           APP_EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Contents/Info.plist")
-          test -x "$APP_PATH/Contents/MacOS/$APP_EXECUTABLE"
+          APP_EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/$APP_EXECUTABLE"
+          echo "App executable declared in Info.plist: $APP_EXECUTABLE_PATH"
+          if [ ! -x "$APP_EXECUTABLE_PATH" ]; then
+            echo "The app executable is missing or not executable" >&2
+            ls -la "$APP_PATH/Contents/MacOS" >&2
+            exit 1
+          fi
           HOST_TRIPLE=$(rustc -vV | sed -n 's/^host: //p')
           SIDECAR=$(find "$APP_PATH/Contents" -type f -name "leaves-api-$HOST_TRIPLE" -print -quit)
           if [ -z "$SIDECAR" ]; then
@@ -102,10 +116,12 @@ jobs:
             exit 1
           fi
           echo "Found app: $APP_PATH"
-          echo "App executable: $APP_EXECUTABLE"
           echo "Found bundled backend: $SIDECAR"
           echo "Found installer: $DMG_PATH"
-          cp "$DMG_PATH" "$RUNNER_TEMP/Leaves-macos.dmg"
+          if ! cp "$DMG_PATH" "$RUNNER_TEMP/Leaves-macos.dmg"; then
+            echo "Could not stage the DMG from $DMG_PATH to RUNNER_TEMP=$RUNNER_TEMP" >&2
+            exit 1
+          fi
 
       - name: Smoke test packaged backend
         shell: bash
