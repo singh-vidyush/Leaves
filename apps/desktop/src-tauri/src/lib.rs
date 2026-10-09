@@ -43,7 +43,7 @@ fn leaves_tray_image() -> Image<'static> {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
@@ -57,7 +57,7 @@ pub fn run() {
                 let (mut events, child) = app
                     .shell()
                     .sidecar("leaves-api")?
-                    .env("LEAVES_DATA_DIR", data_dir.to_string_lossy())
+                    .env("LEAVES_DATA_DIR", data_dir)
                     .env("LEAVES_API_PORT", port.to_string())
                     .spawn()?;
                 app.manage(BackendProcess {
@@ -131,18 +131,19 @@ pub fn run() {
                 let _ = window.hide();
             }
         })
-        .on_event(|app, event| {
-            if matches!(event, RunEvent::Exit) {
-                if let Some(state) = app.try_state::<BackendProcess>() {
-                    if let Ok(mut child) = state.child.lock() {
-                        if let Some(child) = child.take() {
-                            let _ = child.kill();
-                        }
+        .invoke_handler(tauri::generate_handler![backend_api_port])
+        .build(tauri::generate_context!())
+        .expect("error while building Leaves");
+
+    app.run(|app, event| {
+        if matches!(event, RunEvent::Exit) {
+            if let Some(state) = app.try_state::<BackendProcess>() {
+                if let Ok(mut child) = state.child.lock() {
+                    if let Some(child) = child.take() {
+                        let _ = child.kill();
                     }
                 }
             }
-        })
-        .invoke_handler(tauri::generate_handler![backend_api_port])
-        .run(tauri::generate_context!())
-        .expect("error while running Leaves");
+        }
+    });
 }
