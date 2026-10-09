@@ -1,0 +1,135 @@
+name: macOS app
+
+on:
+  push:
+    branches: [main, work]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            arch: arm64
+          - runner: macos-26-intel
+            arch: x86_64
+    outputs:
+      signed: ${{ steps.package_tag.outputs.signed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check release tag matches app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          TAG_VERSION="${RELEASE_TAG#v}"
+          APP_VERSION=$(python3 -c 'import json; print(json.load(open("apps/desktop/src-tauri/tauri.conf.json"))["version"])')
+          CARGO_VERSION=$(python3 -c 'import tomllib; print(tomllib.load(open("apps/desktop/src-tauri/Cargo.toml", "rb"))["package"]["version"])')
+          if [ "$TAG_VERSION" != "$APP_VERSION" ] || [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "Tag $RELEASE_TAG must match Tauri and Cargo versions ($APP_VERSION, $CARGO_VERSION)." >&2
+            exit 1
+          fi
+
+      - name: Install backend build dependencies
+        working-directory: apps/server
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --disable-pip-version-check -e '.[bundle]'
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
+
+      - name: Build unsigned package
+        id: package_branch
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        working-directory: apps/desktop
+        run: |
+          echo "signed=false" >> "$GITHUB_OUTPUT"
+          pnpm tauri build --ci
+
+      - name: Build signed and notarized release package
+        id: package_tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: apps/desktop
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] && \
+             [ -n "$APPLE_SIGNING_IDENTITY" ] && [ -n "$APPLE_ID" ] && \
+             [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            pnpm tauri build --ci
+          else
+            echo "::warning::Apple signing/notarization secrets are incomplete; building an unsigned test artifact only."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            env -u APPLE_CERTIFICATE -u APPLE_CERTIFICATE_PASSWORD \
+              -u APPLE_SIGNING_IDENTITY -u APPLE_ID -u APPLE_PASSWORD \
+              -u APPLE_TEAM_ID pnpm tauri build --ci
+          fi
+
+      - name: Prepare DMG download
+        run: |
+          set -eu
+          DMG=$(find apps/desktop/src-tauri/target/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' -print -quit)
+          test -n "$DMG"
+          mkdir -p dist
+          cp "$DMG" "dist/Leaves-macos-$(uname -m).dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Leaves-macos-${{ matrix.arch }}
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish signed GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v') && needs.build.outputs.signed == 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Leaves-macos-*
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          make_latest: true
+          files: dist/*.dmg
