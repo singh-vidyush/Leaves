@@ -2,7 +2,6 @@
 .DS_Store
 /data/*
 !.gitkeep
-!/data/README.md
 .env
 .env.*
 !.env.example
