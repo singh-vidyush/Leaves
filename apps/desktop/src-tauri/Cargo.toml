@@ -1,6 +1,6 @@
 [package]
 name = "leaves"
-version = "0.1.0"
+version = "0.1.1"
 description = "Private personal context, on your device"
 authors = ["Leaves"]
 edition = "2021"

@@ -32,10 +32,10 @@ If Gatekeeper blocks the unsigned app:
 4. Confirm that you want to open the app.
 
 You can also download Leaves directly from [GitHub Releases](https://github.com/singh-vidyush/Leaves/releases/latest).
-The current `v0.1.0` release has a legacy [DMG download](https://github.com/singh-vidyush/Leaves/releases/latest/download/Leaves-macos.dmg)
+The legacy `v0.1.0` release has a [DMG download](https://github.com/singh-vidyush/Leaves/releases/download/v0.1.0/Leaves-macos.dmg)
 without a published checksum, so the curl installer intentionally refuses it.
-The architecture-specific DMG and checksum links are available after a new
-release is published: [Apple Silicon DMG](https://github.com/singh-vidyush/Leaves/releases/latest/download/Leaves-macos-arm64.dmg) ·
+The architecture-specific DMG and checksum links are published with new tagged
+releases: [Apple Silicon DMG](https://github.com/singh-vidyush/Leaves/releases/latest/download/Leaves-macos-arm64.dmg) ·
 [Intel DMG](https://github.com/singh-vidyush/Leaves/releases/latest/download/Leaves-macos-x86_64.dmg).
 
 To update or reinstall Leaves, run the same curl command again. It verifies
