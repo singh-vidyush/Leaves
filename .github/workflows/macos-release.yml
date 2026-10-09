@@ -91,9 +91,18 @@ jobs:
           APP_EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Contents/Info.plist")
           test -x "$APP_PATH/Contents/MacOS/$APP_EXECUTABLE"
           HOST_TRIPLE=$(rustc -vV | sed -n 's/^host: //p')
-          SIDECAR="$APP_PATH/Contents/MacOS/leaves-api-$HOST_TRIPLE"
-          test -x "$SIDECAR"
+          SIDECAR=$(find "$APP_PATH/Contents" -type f -name "leaves-api-$HOST_TRIPLE" -print -quit)
+          if [ -z "$SIDECAR" ]; then
+            echo "Bundled backend for $HOST_TRIPLE was not found in $APP_PATH/Contents" >&2
+            find "$APP_PATH/Contents" -type f -name 'leaves-api-*' -print >&2
+            exit 1
+          fi
+          if [ ! -x "$SIDECAR" ]; then
+            echo "Bundled backend is not executable: $SIDECAR" >&2
+            exit 1
+          fi
           echo "Found app: $APP_PATH"
+          echo "App executable: $APP_EXECUTABLE"
           echo "Found bundled backend: $SIDECAR"
           echo "Found installer: $DMG_PATH"
           cp "$DMG_PATH" "$RUNNER_TEMP/Leaves-macos.dmg"
