@@ -25,7 +25,8 @@ pnpm install --frozen-lockfile
 pnpm tauri build
 ```
 
-The Tauri `beforeBundleCommand` runs `scripts/build_backend.sh`. It builds
+The Tauri build hooks run `scripts/build_backend.sh` before Rust compilation,
+so the configured sidecar exists when Tauri validates its resources. It builds
 `apps/server/launcher.py` as a one-file executable in
 `apps/desktop/src-tauri/binaries/` with the Rust host target suffix required by
 Tauri's `externalBin` configuration. The generated binary is ignored by Git.

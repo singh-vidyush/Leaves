@@ -16,16 +16,9 @@ From the repository root:
 cd apps/server
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e .
+python -m pip install -e ".[bundle]"
 cd ../desktop
 pnpm install
-```
-
-For a packaged Tauri build, install the backend bundling extra in `apps/server`:
-
-```sh
-cd apps/server
-python -m pip install -e ".[bundle]"
 ```
 
 Tauri packages the Python API as a platform-specific sidecar. Build on the same
