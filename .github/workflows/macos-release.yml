@@ -74,7 +74,29 @@ jobs:
         working-directory: apps/server
         run: .venv/bin/python -m pytest tests -q
 
+      - name: Require Apple signing and notarization credentials
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!name:-}" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf 'Configure these GitHub Actions secrets before creating a macOS release: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
       - name: Build app and disk image
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: ./scripts/build_macos.sh
 
       - name: Verify packaged app and sidecar
@@ -96,6 +118,7 @@ jobs:
             exit 1
           fi
           plutil -lint "$APP_PATH/Contents/Info.plist"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
           APP_EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Contents/Info.plist")
           APP_EXECUTABLE_PATH="$APP_PATH/Contents/MacOS/$APP_EXECUTABLE"
           echo "App executable declared in Info.plist: $APP_EXECUTABLE_PATH"
@@ -155,11 +178,28 @@ jobs:
           print("Packaged backend health and SQLite initialization passed")
           PY
 
+      - name: Notarize and staple installer
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit "$RUNNER_TEMP/Leaves-macos.dmg" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "$RUNNER_TEMP/Leaves-macos.dmg"
+          xcrun stapler validate "$RUNNER_TEMP/Leaves-macos.dmg"
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "${GITHUB_REF_NAME}"
-          "$RUNNER_TEMP/Leaves-macos.dmg"
-          --title "Leaves ${GITHUB_REF_NAME}"
-          --generate-notes
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/Leaves-macos.dmg" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/Leaves-macos.dmg" \
+              --title "Leaves ${GITHUB_REF_NAME}" \
+              --generate-notes
+          fi

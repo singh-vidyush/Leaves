@@ -7,17 +7,31 @@ credentials use the operating system's secure credential store.
 
 ## Distribution status
 
-Leaves publishes a macOS installer when a `v*` version tag is pushed. There is
-not a released installer yet. After the first successful tagged build, download
+Leaves publishes a macOS installer when a `v*` version tag is pushed. Download
 the latest installer here:
 
 [Download Leaves for macOS](https://github.com/singh-vidyush/Leaves/releases/latest/download/Leaves-macos.dmg)
 
 [View Leaves releases](https://github.com/singh-vidyush/Leaves/releases)
 
-The release workflow runs the backend tests, builds the app and disk image on a
-macOS runner, verifies the bundled Python sidecar, and smoke tests the packaged
-backend before publishing the `.dmg`.
+The current `v0.1.0` installer is unsigned, so Gatekeeper may report that the
+app is damaged. New releases require Apple Developer ID signing and
+notarization credentials in GitHub Actions; the workflow will not publish an
+unsigned installer. It runs the backend tests, builds the app and disk image on
+a macOS runner, verifies the bundled Python sidecar, smoke tests the packaged
+backend, and notarizes the installer before publishing it.
+
+Before triggering a signed release, add these repository Actions secrets under
+**Settings → Secrets and variables → Actions**:
+
+- `APPLE_CERTIFICATE`: base64 encoded Developer ID Application `.p12` certificate
+- `APPLE_CERTIFICATE_PASSWORD`: password used when exporting that `.p12`
+- `APPLE_ID`: Apple Developer account email
+- `APPLE_PASSWORD`: app-specific password for notarization
+- `APPLE_TEAM_ID`: Apple Developer Team ID
+
+Tauri infers the signing identity from the imported certificate. Keep these
+values in GitHub Secrets; do not commit them or paste them into chat.
 
 ## Requirements
 
@@ -66,9 +80,17 @@ This creates `Leaves.app` and a `.dmg` under
 as a Tauri sidecar and starts automatically. User data is stored persistently
 in the macOS application data directory. Build on the Mac architecture you
 intend to use; PyInstaller does not cross-compile the sidecar.
-The build is local and unsigned unless a signing identity is configured. Sharing
+The local build is unsigned unless a signing identity is configured. Sharing
 the app without Gatekeeper warnings requires Apple Developer ID signing and
 notarization.
+
+As a temporary workaround for the current unsigned release, if you trust the
+downloaded Leaves app, move it to Applications and remove its quarantine flag
+in Terminal:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Leaves.app
+```
 
 To publish a new version, update the version in `apps/desktop/package.json`,
 `apps/desktop/src-tauri/tauri.conf.json`,
