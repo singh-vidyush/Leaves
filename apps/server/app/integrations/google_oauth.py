@@ -112,6 +112,11 @@ def complete_google_oauth(state: str, code: str) -> str:
             except ValueError:
                 payload = {}
             google_error = payload.get("error") if isinstance(payload, dict) else None
+            google_description = payload.get("error_description") if isinstance(payload, dict) else None
+            if not isinstance(google_description, str):
+                google_description = None
+            elif len(google_description) > 300:
+                google_description = google_description[:300]
             if google_error == "invalid_client":
                 detail = "Google rejected the OAuth client ID. Check that the local value is a Desktop client ID from the configured project."
             elif google_error == "invalid_grant":
@@ -120,6 +125,8 @@ def complete_google_oauth(state: str, code: str) -> str:
                 detail = "Google rejected the callback URL. Check the OAuth client type and loopback redirect configuration."
             else:
                 detail = f"Google token exchange failed ({google_error or response.status_code})."
+            if google_description:
+                detail = f"{detail} Google says: {google_description}"
             raise GoogleOAuthError(detail) from error
         token = response.json()
         access_token = token["access_token"]
