@@ -82,6 +82,22 @@ def ingest_email(
         return email_id
 
 
+def _existing_email_dates(remote_ids: list[str]) -> dict[str, str]:
+    dates: dict[str, str] = {}
+    with connect() as db:
+        for offset in range(0, len(remote_ids), 500):
+            chunk = remote_ids[offset:offset + 500]
+            if not chunk:
+                continue
+            placeholders = ",".join("?" for _ in chunk)
+            rows = db.execute(
+                f"SELECT remote_id, date FROM emails WHERE remote_id IN ({placeholders})",
+                tuple(chunk),
+            ).fetchall()
+            dates.update({row["remote_id"]: row["date"] for row in rows})
+    return dates
+
+
 def sync_gmail(
     filter_label: Optional[str] = None,
     after_timestamp: Optional[datetime] = None,
@@ -96,7 +112,9 @@ def sync_gmail(
 
     headers = {"Authorization": f"Bearer {access_token}"}
     base_url = "https://gmail.googleapis.com/gmail/v1/users/me"
-    params: dict[str, Any] = {"maxResults": 100}
+    # Keep Gmail API quota use bounded, especially when the first sync sees a
+    # large inbox. Later syncs skip messages already stored locally.
+    params: dict[str, Any] = {"maxResults": 20}
     if after_timestamp:
         # Gmail's `after` filter uses whole Unix seconds. The small overlap lets
         # the caller recover messages when Gmail indexes them a little late.
@@ -113,6 +131,7 @@ def sync_gmail(
 
     messages: list[dict[str, str]] = []
     message_dates: list[tuple[str, str]] = []
+    synced_count = 0
     page_token = None
     with httpx.Client(timeout=30.0) as client:
         refreshed_after_unauthorized = False
@@ -137,10 +156,17 @@ def sync_gmail(
             page = response.json()
             messages.extend(page.get("messages", []))
             page_token = page.get("nextPageToken")
-            if not page_token:
+            # A manual sync is a lightweight recent-inbox refresh. Incremental
+            # automation may paginate when there is a real backlog to process.
+            if not page_token or after_timestamp is None:
                 break
 
+        existing_dates = _existing_email_dates([message["id"] for message in messages])
         for message in messages:
+            known_date = existing_dates.get(message["id"])
+            if known_date:
+                message_dates.append((message["id"], known_date))
+                continue
             response = gmail_get(
                 f"{base_url}/messages/{message['id']}",
                 {"format": "full"},
@@ -168,7 +194,8 @@ def sync_gmail(
                 labels=label_names,
                 date=message_date,
             )
-    result: dict[str, Any] = {"synced_count": len(messages), "filter_label": filter_label, "mode": "live"}
+            synced_count += 1
+    result: dict[str, Any] = {"synced_count": synced_count, "filter_label": filter_label, "mode": "live"}
     if after_timestamp is not None:
         result["message_dates"] = message_dates
     return result
