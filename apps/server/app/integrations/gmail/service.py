@@ -1,11 +1,12 @@
 from datetime import datetime, timezone
+import base64
+from html.parser import HTMLParser
 import json
-import logging
 from typing import Any, Optional
 
 from app.core.database import connect
-
-logger = logging.getLogger("leaves.gmail")
+from app.core.credentials import CredentialStoreUnavailable
+from app.integrations.google_oauth import GoogleOAuthError, get_google_access_token, google_service_connected
 
 SAMPLE_GMAIL_MESSAGES = [
     {
@@ -80,10 +81,119 @@ def ingest_email(
 
 
 def sync_gmail(filter_label: Optional[str] = None) -> dict[str, Any]:
-    """
-    Syncs Gmail messages. If external credentials are not set,
-    populates test/sample messages so integration is verifiable.
-    """
+    """Sync live Gmail with read-only OAuth; use labeled sample data otherwise."""
+    try:
+        access_token = get_google_access_token("gmail")
+    except GoogleOAuthError:
+        if not google_service_connected("gmail"):
+            return _load_sample_gmail(filter_label)
+        raise
+
+    headers = {"Authorization": f"Bearer {access_token}"}
+    base_url = "https://gmail.googleapis.com/gmail/v1/users/me"
+    params: dict[str, Any] = {"maxResults": 100}
+    if filter_label:
+        label_response = httpx.get(f"{base_url}/labels", headers=headers, timeout=20.0)
+        if label_response.is_error:
+            raise GoogleApiError("Gmail labels could not be read. Check the granted Gmail permission.")
+        match = next((item["id"] for item in label_response.json().get("labels", []) if item.get("name") == filter_label), None)
+        if match is None:
+            return {"synced_count": 0, "filter_label": filter_label, "mode": "live"}
+        params["labelIds"] = [match]
+
+    messages: list[dict[str, str]] = []
+    page_token = None
+    with httpx.Client(timeout=30.0) as client:
+        while True:
+            page_params = {**params}
+            if page_token:
+                page_params["pageToken"] = page_token
+            response = client.get(f"{base_url}/messages", headers=headers, params=page_params)
+            if response.is_error:
+                raise GoogleApiError("Gmail messages could not be listed. Reconnect Gmail and try again.")
+            page = response.json()
+            messages.extend(page.get("messages", []))
+            page_token = page.get("nextPageToken")
+            if not page_token:
+                break
+
+        for message in messages:
+            response = client.get(
+                f"{base_url}/messages/{message['id']}",
+                headers=headers,
+                params={"format": "full"},
+            )
+            if response.is_error:
+                raise GoogleApiError("A Gmail message could not be read. Reconnect Gmail and try again.")
+            item = response.json()
+            payload = item.get("payload", {})
+            message_headers = {h.get("name", "").lower(): h.get("value", "") for h in payload.get("headers", [])}
+            subject = message_headers.get("subject", "(no subject)")
+            sender = message_headers.get("from", "")
+            recipient = message_headers.get("to", "")
+            body = _extract_message_body(payload)
+            snippet = item.get("snippet", "")
+            label_names = item.get("labelIds", [])
+            message_date = datetime.fromtimestamp(int(item.get("internalDate", "0")) / 1000, timezone.utc).isoformat()
+            ingest_email(
+                remote_id=item["id"],
+                subject=subject,
+                sender=sender,
+                recipient=recipient,
+                snippet=snippet,
+                body=body,
+                labels=label_names,
+                date=message_date,
+            )
+    return {"synced_count": len(messages), "filter_label": filter_label, "mode": "live"}
+
+
+class GoogleApiError(RuntimeError):
+    pass
+
+
+class _HTMLText(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+
+def _decode_body(data: str) -> str:
+    padded = data + "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")
+
+
+def _extract_message_body(payload: dict[str, Any]) -> str:
+    plain: list[str] = []
+    html: list[str] = []
+
+    def visit(part: dict[str, Any]) -> None:
+        body = part.get("body", {}).get("data")
+        mime_type = part.get("mimeType", "")
+        if body:
+            decoded = _decode_body(body)
+            if mime_type == "text/plain":
+                plain.append(decoded)
+            elif mime_type == "text/html":
+                html.append(decoded)
+        for child in part.get("parts", []):
+            visit(child)
+
+    visit(payload)
+    if plain:
+        return "\n".join(plain)
+    if html:
+        parser = _HTMLText()
+        for fragment in html:
+            parser.feed(fragment)
+        return " ".join(parser.parts)
+    return ""
+
+
+def _load_sample_gmail(filter_label: Optional[str]) -> dict[str, Any]:
     count = 0
     for sample in SAMPLE_GMAIL_MESSAGES:
         if filter_label and filter_label not in sample["labels"]:
@@ -99,7 +209,7 @@ def sync_gmail(filter_label: Optional[str] = None) -> dict[str, Any]:
             date=sample["date"],
         )
         count += 1
-    return {"synced_count": count, "filter_label": filter_label}
+    return {"synced_count": count, "filter_label": filter_label, "mode": "sample"}
 
 
 def list_emails(limit: int = 50, label: Optional[str] = None) -> list[dict[str, Any]]:

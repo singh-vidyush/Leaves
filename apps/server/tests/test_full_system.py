@@ -2,6 +2,12 @@ import pytest
 from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 from app.main import app
+from app.core.database import connect
+from app.services.scheduling import (
+    find_next_available_slot,
+    schedule_task,
+    update_availability_settings,
+)
 
 client = TestClient(app)
 
@@ -156,5 +162,44 @@ def test_export_leaves_data(tmp_path, monkeypatch):
     assert "sources" in data
     assert "emails" in data
     assert "calendar_events" in data
+    assert "time_away_blocks" in data
     assert "tasks" in data
     assert "notifications" in data
+
+
+def test_time_away_block_is_respected(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEAVES_DATA_DIR", str(tmp_path))
+    now = datetime.now(timezone.utc)
+    days_until_monday = (7 - now.weekday()) % 7
+    target_monday = (now + timedelta(days=days_until_monday + 7)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    away_start = target_monday.replace(hour=9)
+    away_end = target_monday.replace(hour=10)
+    response = client.post("/api/settings/time-away", json={
+        "title": "Appointment",
+        "start_time": away_start.isoformat(),
+        "end_time": away_end.isoformat(),
+    })
+    assert response.status_code == 200
+
+    slot_start, slot_end = find_next_available_slot(30, target_monday)
+
+    assert slot_start >= away_end
+    assert slot_end > slot_start
+
+
+def test_notification_preference_disables_schedule_notifications(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEAVES_DATA_DIR", str(tmp_path))
+    update_availability_settings({"notifications_enabled": "false"})
+    with connect() as db:
+        task_id = db.execute(
+            "INSERT INTO tasks(title, source_type, source_ref, suggested_duration_minutes) VALUES (?, ?, ?, ?)",
+            ("Write project plan", "markdown", "notes.md", 30),
+        ).lastrowid
+
+    schedule_task(task_id)
+
+    with connect() as db:
+        count = db.execute("SELECT COUNT(*) FROM notifications").fetchone()[0]
+    assert count == 0

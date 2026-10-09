@@ -22,6 +22,7 @@ def export_leaves_data() -> dict[str, Any]:
                 pass
             emails.append(d)
         calendar_events = [dict(r) for r in db.execute("SELECT * FROM calendar_events").fetchall()]
+        time_away_blocks = [dict(r) for r in db.execute("SELECT * FROM time_away_blocks").fetchall()]
         tasks = [dict(r) for r in db.execute("SELECT * FROM tasks").fetchall()]
         notifications = [dict(r) for r in db.execute("SELECT * FROM notifications").fetchall()]
         settings = [dict(r) for r in db.execute("SELECT key, value, updated_at FROM settings").fetchall()]
@@ -33,6 +34,7 @@ def export_leaves_data() -> dict[str, Any]:
         "documents": documents,
         "emails": emails,
         "calendar_events": calendar_events,
+        "time_away_blocks": time_away_blocks,
         "tasks": tasks,
         "notifications": notifications,
         "settings": settings,

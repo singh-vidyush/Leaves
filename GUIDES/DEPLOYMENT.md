@@ -1,12 +1,57 @@
-# Build and Deployment Guide
+# Desktop Deployment Guide
 
-<!--
-Document how to build and run the two deployment targets already named in
-ARCHITECTURE.md: the evaluation demo (containerized FastAPI backend with web
-frontend) and the desktop product (Tauri installation with native shell).
+Leaves is packaged as a Tauri desktop app with the FastAPI service bundled as a
+platform-specific PyInstaller sidecar. macOS is the first release target. Build
+the Python sidecar on the same OS and architecture as the Tauri target.
 
-Owner input needed: target operating systems, build/release tools, signing and
-distribution, configuration/data handling, and the exact demo deployment target.
--->
+## Prerequisites
 
-<!-- Add verified build and release steps once targets are confirmed. -->
+- Python 3.11 or newer, Node.js, pnpm, Rust, and platform-specific Tauri
+  prerequisites.
+- A virtual environment with the server bundle extra installed:
+
+  ```sh
+  cd apps/server
+  python3 -m venv .venv
+  .venv/bin/python -m pip install -e ".[bundle]"
+  ```
+
+## Build
+
+From `apps/desktop`, run:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm tauri build
+```
+
+The Tauri `beforeBundleCommand` runs `scripts/build_backend.sh`. It builds
+`apps/server/launcher.py` as a one-file executable in
+`apps/desktop/src-tauri/binaries/` with the Rust host target suffix required by
+Tauri's `externalBin` configuration. The generated binary is ignored by Git.
+Cross-compiling the Python sidecar is intentionally rejected; build on each
+target platform.
+
+## Runtime data and credentials
+
+The packaged backend receives Tauri's application-data directory as
+`LEAVES_DATA_DIR`. SQLite and indexes stay there. API keys and OAuth
+tokens use the operating system's credential manager through Python `keyring`.
+The API reports an actionable error when no secure credential backend exists
+and does not fall back to plaintext storage. To enable Google connections,
+configure a Google Desktop OAuth client ID as `GOOGLE_OAUTH_CLIENT_ID`, register
+the loopback callback `http://127.0.0.1:<api-port>/api/auth/google/callback`,
+and publish the consent screen as needed for your users. Gmail uses
+`gmail.readonly`; Calendar uses `calendar.events.owned`.
+
+Tauri reserves an available loopback port and starts the sidecar there when the
+desktop app starts. The frontend gets that port through a Tauri command. Tauri
+terminates the sidecar when the app exits. Hiding the window leaves the menu-bar
+app and backend alive. Verify a release build on the target platform by checking the
+health endpoint, indexing/search, menu-bar hide/restore, and clean process exit.
+
+## Evaluation demo
+
+A hosted or containerized demo is deferred and is not an MVP release gate. It
+would need isolated disposable data and must not use real user credentials or
+provider accounts. See `SPEC/RELEASE_ACCEPTANCE.md` for release scope.

@@ -14,3 +14,4 @@ __pycache__/
 node_modules/
 target/
 dist/
+apps/desktop/src-tauri/binaries/leaves-api-*

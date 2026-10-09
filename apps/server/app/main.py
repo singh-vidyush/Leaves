@@ -1,32 +1,40 @@
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any, Optional
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.adapters.manager import (
     get_model_settings,
     set_active_provider_name,
 )
-from app.core.credentials import delete_credential, save_credential
+from app.core.credentials import CredentialStoreUnavailable, delete_credential, save_credential
 from app.core.database import connect, initialize_database
 from app.integrations.gmail.service import (
     delete_email_from_leaves,
     list_emails,
     sync_gmail,
 )
-from app.integrations.google_calendar.service import (
-    add_calendar_event,
-    delete_calendar_event,
-    list_events,
-    move_calendar_event,
-    sync_calendar,
+from app.integrations.connectors import get_schedule_connector, get_schedule_connectors
+from app.integrations.google_oauth import (
+    GoogleOAuthError,
+    begin_google_oauth,
+    complete_google_oauth,
+    disconnect_google_service,
+    google_connection_status,
 )
+from app.integrations.google_calendar.service import calendar_is_connected, get_event as get_calendar_event
 from app.services.export import export_leaves_data
 from app.services.indexing import add_source, refresh_source, remove_source
 from app.services.notifications import list_notifications, mark_all_notifications_read, mark_notification_read
 from app.services.scheduling import (
     get_availability_settings,
+    add_time_away_block,
+    list_time_away_blocks,
+    remove_time_away_block,
+    NoAvailableSlotError,
     resolve_conflicts_and_reschedule,
     schedule_task,
     update_availability_settings,
@@ -70,6 +78,28 @@ class AvailabilityInput(BaseModel):
     break_end: Optional[str] = None
     default_duration_minutes: Optional[str] = None
     notifications_enabled: Optional[str] = None
+
+
+class TimeAwayInput(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    start_time: datetime
+    end_time: datetime
+
+    @field_validator("title")
+    @classmethod
+    def clean_title(cls, value: str) -> str:
+        clean = value.strip()
+        if not clean:
+            raise ValueError("Time-away title cannot be blank.")
+        return clean
+
+    @model_validator(mode="after")
+    def validate_range(self):
+        if self.start_time.tzinfo is None or self.end_time.tzinfo is None:
+            raise ValueError("Time-away dates must include a timezone.")
+        if self.end_time <= self.start_time:
+            raise ValueError("Time-away end must be later than its start.")
+        return self
 
 
 class CalendarEventInput(BaseModel):
@@ -183,7 +213,10 @@ def search(q: str = Query(default="", max_length=300), limit: int = Query(defaul
 
 @app.get("/api/settings/model")
 def get_model_config() -> dict:
-    return get_model_settings()
+    try:
+        return get_model_settings()
+    except CredentialStoreUnavailable as err:
+        raise HTTPException(status_code=503, detail=str(err)) from err
 
 
 @app.post("/api/settings/model")
@@ -195,14 +228,23 @@ def update_model_config(payload: ModelSettingsInput) -> dict:
             raise HTTPException(status_code=400, detail=str(err)) from err
 
     if payload.provider and payload.api_key:
-        save_credential(payload.provider, payload.api_key)
+        try:
+            save_credential(payload.provider, payload.api_key)
+        except CredentialStoreUnavailable as err:
+            raise HTTPException(status_code=503, detail=str(err)) from err
 
-    return get_model_settings()
+    try:
+        return get_model_settings()
+    except CredentialStoreUnavailable as err:
+        raise HTTPException(status_code=503, detail=str(err)) from err
 
 
 @app.delete("/api/settings/model/{provider}")
 def delete_model_key(provider: str) -> dict:
-    deleted = delete_credential(provider)
+    try:
+        deleted = delete_credential(provider)
+    except CredentialStoreUnavailable as err:
+        raise HTTPException(status_code=503, detail=str(err)) from err
     return {"deleted": deleted, "provider": provider}
 
 
@@ -217,11 +259,80 @@ def update_availability(payload: AvailabilityInput) -> dict:
     return update_availability_settings(data)
 
 
+@app.get("/api/settings/time-away")
+def get_time_away_blocks() -> list[dict]:
+    return list_time_away_blocks()
+
+
+@app.post("/api/settings/time-away")
+def create_time_away_block(payload: TimeAwayInput) -> dict:
+    return add_time_away_block(
+        payload.title,
+        payload.start_time.isoformat(),
+        payload.end_time.isoformat(),
+    )
+
+
+@app.delete("/api/settings/time-away/{block_id}")
+def delete_time_away_block(block_id: int) -> dict:
+    if not remove_time_away_block(block_id):
+        raise HTTPException(status_code=404, detail="Time-away block not found.")
+    return {"deleted": True}
+
+
 # --- Gmail Integration ---
 
 @app.post("/api/integrations/gmail/sync")
 def sync_gmail_endpoint(label: Optional[str] = None) -> dict:
-    return sync_gmail(filter_label=label)
+    try:
+        return sync_gmail(filter_label=label)
+    except CredentialStoreUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+
+
+@app.get("/api/auth/google/status")
+def google_status_endpoint() -> dict[str, bool]:
+    try:
+        return google_connection_status()
+    except CredentialStoreUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/api/auth/google/{service}/start")
+def google_oauth_start_endpoint(service: str) -> dict[str, str]:
+    try:
+        return begin_google_oauth(service)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except GoogleOAuthError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.delete("/api/auth/google/{service}")
+def google_disconnect_endpoint(service: str) -> dict[str, bool]:
+    try:
+        return {"disconnected": disconnect_google_service(service)}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except CredentialStoreUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.get("/api/auth/google/callback", response_class=HTMLResponse)
+def google_oauth_callback_endpoint(code: Optional[str] = None, state: Optional[str] = None, error: Optional[str] = None):
+    if error:
+        return HTMLResponse("<h2>Google connection was not completed.</h2><p>You can close this tab and return to Leaves.</p>", status_code=400)
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Google authorization callback is missing its code or state.")
+    try:
+        service = complete_google_oauth(state, code)
+    except GoogleOAuthError as exception:
+        raise HTTPException(status_code=400, detail=str(exception)) from exception
+    except CredentialStoreUnavailable as exception:
+        raise HTTPException(status_code=503, detail=str(exception)) from exception
+    return HTMLResponse(f"<h2>Google {service.title()} connected to Leaves.</h2><p>You can close this tab and return to Leaves.</p>")
 
 
 @app.get("/api/integrations/gmail/emails")
@@ -239,19 +350,39 @@ def delete_email_endpoint(email_id: int) -> dict:
 
 # --- Google Calendar Integration ---
 
+@app.get("/api/integrations/schedule-connectors")
+def list_schedule_connectors_endpoint() -> list[dict]:
+    try:
+        return [
+        {
+            "id": connector.id,
+            "display_name": connector.display_name,
+            "live": connector.is_live,
+            "capabilities": ["read", "create", "move", "delete-with-confirmation"],
+        }
+            for connector in get_schedule_connectors()
+        ]
+    except CredentialStoreUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
 @app.post("/api/integrations/calendar/sync")
 def sync_calendar_endpoint() -> dict:
-    return sync_calendar()
+    try:
+        return get_schedule_connector("local_calendar").sync()
+    except CredentialStoreUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
 
 
 @app.get("/api/integrations/calendar/events")
 def list_calendar_events_endpoint(limit: int = 50) -> list[dict]:
-    return list_events(limit=limit)
+    return get_schedule_connector("local_calendar").list_events(limit=limit)
 
 
 @app.post("/api/integrations/calendar/events")
 def add_calendar_event_endpoint(payload: CalendarEventInput) -> dict:
-    return add_calendar_event(
+    return get_schedule_connector("local_calendar").add_event(
         title=payload.title,
         start_time=payload.start_time,
         end_time=payload.end_time,
@@ -262,7 +393,7 @@ def add_calendar_event_endpoint(payload: CalendarEventInput) -> dict:
 @app.put("/api/integrations/calendar/events/{event_id}")
 def move_calendar_event_endpoint(event_id: int, payload: MoveEventInput) -> dict:
     try:
-        return move_calendar_event(event_id, payload.start_time, payload.end_time)
+        return get_schedule_connector("local_calendar").move_event(event_id, payload.start_time, payload.end_time)
     except LookupError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err
 
@@ -280,10 +411,17 @@ def delete_calendar_event_endpoint(
             status_code=400,
             detail="Deleting calendar events always requires explicit user confirmation. Pass confirmed=true.",
         )
-    deleted = delete_calendar_event(event_id, user_confirmed=True)
+    event = get_calendar_event(event_id)
+    deleted_remote = bool(
+        event
+        and event.get("remote_id")
+        and event.get("created_by") == "leaves"
+        and calendar_is_connected()
+    )
+    deleted = get_schedule_connector("local_calendar").delete_event(event_id, user_confirmed=True)
     if not deleted:
         raise HTTPException(status_code=404, detail="Event not found.")
-    return {"deleted": True, "original_event_deleted": False}
+    return {"deleted": True, "original_event_deleted": deleted_remote}
 
 
 # --- Tasks & Scheduling ---
@@ -304,6 +442,8 @@ def schedule_task_endpoint(task_id: int) -> dict:
         return schedule_task(task_id)
     except LookupError as err:
         raise HTTPException(status_code=404, detail=str(err)) from err
+    except NoAvailableSlotError as err:
+        raise HTTPException(status_code=409, detail=str(err)) from err
 
 
 @app.put("/api/tasks/{task_id}/status")
