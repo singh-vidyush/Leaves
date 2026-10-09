@@ -1,0 +1,141 @@
+name: macOS Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build and publish macOS installer
+    runs-on: macos-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set up build tools
+        shell: bash
+        run: |
+          npm install --global pnpm@11.19.0
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$RUNNER_TEMP/rustup-init.sh"
+            sh "$RUNNER_TEMP/rustup-init.sh" -y --profile minimal --default-toolchain stable
+          fi
+          "$HOME/.cargo/bin/rustup" toolchain install stable --profile minimal
+          "$HOME/.cargo/bin/rustup" default stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          xcode-select -p
+
+      - name: Check release tag matches project versions
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - "$RELEASE_TAG" <<'PY'
+          import json
+          import pathlib
+          import sys
+          import tomllib
+
+          root = pathlib.Path.cwd()
+          expected = sys.argv[1].removeprefix("v")
+          versions = {
+              "tag": expected,
+              "desktop package": json.loads((root / "apps/desktop/package.json").read_text())["version"],
+              "Tauri app": json.loads((root / "apps/desktop/src-tauri/tauri.conf.json").read_text())["version"],
+          }
+          with (root / "apps/desktop/src-tauri/Cargo.toml").open("rb") as file:
+              versions["Tauri crate"] = tomllib.load(file)["package"]["version"]
+          with (root / "apps/server/pyproject.toml").open("rb") as file:
+              versions["Python backend"] = tomllib.load(file)["project"]["version"]
+          print("Release versions:", versions)
+          if len(set(versions.values())) != 1:
+              raise SystemExit("Release tag and project versions must all match")
+          PY
+
+      - name: Install backend build and test dependencies
+        run: |
+          python -m venv apps/server/.venv
+          apps/server/.venv/bin/python -m pip install --disable-pip-version-check -e 'apps/server[bundle,test]'
+
+      - name: Run backend tests
+        working-directory: apps/server
+        run: .venv/bin/python -m pytest tests -q
+
+      - name: Build app and disk image
+        run: ./scripts/build_macos.sh
+
+      - name: Verify packaged app and sidecar
+        id: verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR="apps/desktop/src-tauri/target/release/bundle"
+          APP_PATH=$(find "$BUNDLE_DIR" -maxdepth 3 -type d -name 'Leaves.app' -print -quit)
+          DMG_PATH=$(find "$BUNDLE_DIR" -maxdepth 3 -type f -name '*.dmg' -print -quit)
+          test -n "$APP_PATH" && test -d "$APP_PATH"
+          test -n "$DMG_PATH" && test -s "$DMG_PATH"
+          test -x "$APP_PATH/Contents/MacOS/Leaves"
+          plutil -lint "$APP_PATH/Contents/Info.plist"
+          HOST_TRIPLE=$(rustc -vV | sed -n 's/^host: //p')
+          SIDECAR="$APP_PATH/Contents/MacOS/leaves-api-$HOST_TRIPLE"
+          test -x "$SIDECAR"
+          echo "Found app: $APP_PATH"
+          echo "Found bundled backend: $SIDECAR"
+          echo "Found installer: $DMG_PATH"
+          cp "$DMG_PATH" "$RUNNER_TEMP/Leaves-macos.dmg"
+
+      - name: Smoke test packaged backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOST_TRIPLE=$(rustc -vV | sed -n 's/^host: //p')
+          APP_PATH=$(find apps/desktop/src-tauri/target/release/bundle -maxdepth 3 -type d -name 'Leaves.app' -print -quit)
+          SIDECAR="$APP_PATH/Contents/MacOS/leaves-api-$HOST_TRIPLE"
+          SMOKE_DIR=$(mktemp -d)
+          PORT=18743
+          LEAVES_DATA_DIR="$SMOKE_DIR" LEAVES_API_PORT="$PORT" "$SIDECAR" >"$RUNNER_TEMP/leaves-sidecar.log" 2>&1 &
+          SIDECAR_PID=$!
+          cleanup() {
+            kill "$SIDECAR_PID" 2>/dev/null || true
+            wait "$SIDECAR_PID" 2>/dev/null || true
+            rm -rf "$SMOKE_DIR"
+          }
+          trap cleanup EXIT
+          for attempt in $(seq 1 40); do
+            if curl --fail --silent "http://127.0.0.1:$PORT/api/health" >"$RUNNER_TEMP/leaves-health.json"; then
+              break
+            fi
+            sleep 0.5
+          done
+          python - "$RUNNER_TEMP/leaves-health.json" "$SMOKE_DIR" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          health = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          assert health == {"status": "ok", "service": "leaves-local"}, health
+          assert (pathlib.Path(sys.argv[2]) / "leaves.sqlite3").is_file(), "SQLite database was not initialized"
+          print("Packaged backend health and SQLite initialization passed")
+          PY
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${GITHUB_REF_NAME}"
+          "$RUNNER_TEMP/Leaves-macos.dmg"
+          --title "Leaves ${GITHUB_REF_NAME}"
+          --generate-notes

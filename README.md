@@ -7,8 +7,14 @@ credentials use the operating system's secure credential store.
 
 ## Distribution status
 
-Leaves can be packaged locally as a macOS `.app` and `.dmg`. The repository
-does not publish GitHub Releases or installers automatically.
+Leaves publishes a macOS installer when a `v*` version tag is pushed. Download
+the latest installer here:
+
+[Download Leaves for macOS](https://github.com/singh-vidyush/Leaves/releases/latest/download/Leaves-macos.dmg)
+
+The release workflow runs the backend tests, builds the app and disk image on a
+macOS runner, verifies the bundled Python sidecar, and smoke tests the packaged
+backend before publishing the `.dmg`.
 
 ## Requirements
 
@@ -60,6 +66,20 @@ intend to use; PyInstaller does not cross-compile the sidecar.
 The build is local and unsigned unless a signing identity is configured. Sharing
 the app without Gatekeeper warnings requires Apple Developer ID signing and
 notarization.
+
+To publish a new version, update the version in `apps/desktop/package.json`,
+`apps/desktop/src-tauri/tauri.conf.json`,
+`apps/desktop/src-tauri/Cargo.toml`, and `apps/server/pyproject.toml` to the same
+value. Commit and push those changes, then create and push the matching tag (for
+example, `v1.2.3`):
+
+```sh
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+The macOS Release workflow validates the matching versions and publishes
+`Leaves-macos.dmg` to that GitHub Release after all checks pass.
 
 ## Google integrations
 
