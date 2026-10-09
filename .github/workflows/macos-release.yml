@@ -104,11 +104,10 @@ jobs:
             ls -la "$APP_PATH/Contents/MacOS" >&2
             exit 1
           fi
-          HOST_TRIPLE=$(rustc -vV | sed -n 's/^host: //p')
-          SIDECAR=$(find "$APP_PATH/Contents" -type f -name "leaves-api-$HOST_TRIPLE" -print -quit)
-          if [ -z "$SIDECAR" ]; then
-            echo "Bundled backend for $HOST_TRIPLE was not found in $APP_PATH/Contents" >&2
-            find "$APP_PATH/Contents" -type f -name 'leaves-api-*' -print >&2
+          SIDECAR="$APP_PATH/Contents/MacOS/leaves-api"
+          if [ ! -f "$SIDECAR" ]; then
+            echo "Bundled backend was not found at $SIDECAR" >&2
+            find "$APP_PATH/Contents" -type f -name 'leaves-api*' -print >&2
             exit 1
           fi
           if [ ! -x "$SIDECAR" ]; then
@@ -127,9 +126,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          HOST_TRIPLE=$(rustc -vV | sed -n 's/^host: //p')
           APP_PATH=$(find apps/desktop/src-tauri/target/release/bundle -maxdepth 3 -type d -name 'Leaves.app' -print -quit)
-          SIDECAR="$APP_PATH/Contents/MacOS/leaves-api-$HOST_TRIPLE"
+          SIDECAR="$APP_PATH/Contents/MacOS/leaves-api"
           SMOKE_DIR=$(mktemp -d)
           PORT=18743
           LEAVES_DATA_DIR="$SMOKE_DIR" LEAVES_API_PORT="$PORT" "$SIDECAR" >"$RUNNER_TEMP/leaves-sidecar.log" 2>&1 &
