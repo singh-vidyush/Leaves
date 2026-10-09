@@ -1,0 +1,16 @@
+# Local application data and secrets must not be committed.
+.DS_Store
+/data/*
+!.gitkeep
+!/data/README.md
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+*.tsbuildinfo
+.venv/
+*.egg-info/
+node_modules/
+target/
+dist/
