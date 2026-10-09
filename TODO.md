@@ -7,6 +7,8 @@
 - [x] Add selected-folder Markdown indexing, recursive scan toggle, search, refresh, and index removal.
 - [x] Bundle the API as a platform-specific Tauri sidecar; select a free loopback port, start it for packaged builds, and stop it on app exit.
 - [ ] Verify the packaged Tauri lifecycle on macOS before release.
+- [x] Add macOS DMG build and GitHub Release automation.
+- [ ] Configure Apple signing/notarization secrets and publish the first signed installer.
 - [x] Export Leaves-held data without exporting credentials.
 - [x] Store model-provider credentials in the OS credential manager and define fail-closed behavior.
 
