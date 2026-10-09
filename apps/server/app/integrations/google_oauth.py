@@ -20,6 +20,7 @@ SCOPES = {
     "calendar": "https://www.googleapis.com/auth/calendar.events.owned",
 }
 GOOGLE_CLIENT_ID_ENV = "GOOGLE_OAUTH_CLIENT_ID"
+GOOGLE_CLIENT_SECRET_ENV = "GOOGLE_OAUTH_CLIENT_SECRET"
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke"
@@ -50,6 +51,15 @@ def _client_id() -> str:
             f"Set {GOOGLE_CLIENT_ID_ENV} to a Google OAuth desktop client ID before connecting an account."
         )
     return client_id
+
+
+def _client_secret() -> str:
+    client_secret = os.environ.get(GOOGLE_CLIENT_SECRET_ENV, "").strip()
+    if not client_secret:
+        raise GoogleOAuthError(
+            f"Set {GOOGLE_CLIENT_SECRET_ENV} in your local .env file before connecting a Google account."
+        )
+    return client_secret
 
 
 def begin_google_oauth(service: str) -> dict[str, str]:
@@ -97,6 +107,7 @@ def complete_google_oauth(state: str, code: str) -> str:
             GOOGLE_TOKEN_URL,
             data={
                 "client_id": _client_id(),
+                "client_secret": _client_secret(),
                 "code": code,
                 "code_verifier": transaction.code_verifier,
                 "grant_type": "authorization_code",
@@ -166,6 +177,7 @@ def get_google_access_token(service: str) -> str:
             GOOGLE_TOKEN_URL,
             data={
                 "client_id": _client_id(),
+                "client_secret": _client_secret(),
                 "refresh_token": refresh_token,
                 "grant_type": "refresh_token",
             },

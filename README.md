@@ -59,11 +59,8 @@ upload or publish it. PyInstaller does not cross-compile the backend sidecar.
 ## Google integrations
 
 To connect Gmail and Google Calendar in development, copy `.env.example` to
-`.env` and set `GOOGLE_OAUTH_CLIENT_ID` to your Google Desktop OAuth client ID.
-The development script loads this local file; `.env` is ignored by Git. You can
-also set the variable in your shell before running `./scripts/dev.sh`.
-
-The OAuth client ID is a public identifier and is sent to Google during OAuth.
-This app uses PKCE and does not need a client secret. Never add a client secret
-or OAuth tokens to the repository. The app requests read-only Gmail access and
-access to events owned by the user.
+`.env` and set both `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`
+from the same Google OAuth Desktop client. The development script loads this
+local file; `.env` is ignored by Git. Never commit or share the populated `.env`
+file, client secret, or OAuth tokens. The app uses PKCE, requests read-only
+Gmail access, and requests access to events owned by the user.
